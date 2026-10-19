@@ -266,6 +266,8 @@ let settings: Settings = loadSettings();
 let engine!: BehaviorEngine;
 let scaleFactor = 1; // 物理↔逻辑坐标转换（系统缩放）
 let winSize = WIN; // 当前窗口边长（模型缩放时跟随，默认 300）
+// 「模型大小」面板的位置（相对窗口，独立于模型；用户拖动后记住）
+let sizePanelPos: { left: number; top: number } | null = null;
 // 调试边框（红线勾勒窗口边界）
 let debugBorderVisible = false;
 // 调试模型边框（绿框勾勒角色边界，验证"模型不出屏"）
@@ -290,14 +292,9 @@ function attachView(v: PetView) {
  * 这样放大到 200% 时窗口跟着变大，不会把模型裁掉。
  */
 async function setModelDisplaySize(size: number) {
-  // 窗口最大不超过工作区：200% 时窗口会到 1400，而 1080p 屏幕放不下，
-  // 模型下半截会被屏幕/任务栏裁掉。限制后模型始终完整可见。
-  const a = engine.workArea;
-  const maxDim = Math.min(
-    a ? a.width : (window.screen.availWidth || 1920),
-    a ? a.height : (window.screen.availHeight || 1080),
-  ) - 8;
-  const s = Math.max(120, Math.min(Math.round(size), Math.max(320, maxDim)));
+  // 恢复 200% 的真实大小（窗口 = 700 * 2 = 1400）；
+  // 最小 320 是给「模型大小」面板留出显示空间，再小面板就放不下了。
+  const s = Math.max(120, Math.round(size));
   winSize = s;
   engine.setWindowSize(s);
   view.setScale(s);
@@ -323,7 +320,7 @@ async function applyModelScale(s: number, record = false) {
     if (key) settings.modelScales[key] = clamped;
   }
   saveSettings(settings);
-  await setModelDisplaySize(Math.round(WIN * clamped));
+  await setModelDisplaySize(Math.max(320, Math.round(WIN * clamped)));
 }
 
 /** 调试边框开关（红线勾勒窗口边界，观察窗口出屏与模型偏移） */
@@ -536,12 +533,26 @@ function positionPanelNearModel(panel: HTMLElement) {
   // 「模型大小」面板固定在窗口顶部：拖动滑块会实时改变窗口尺寸，
   // 如果跟着模型每帧重算，面板会在大小/位置之间来回跳，窗口一小就被挤出可见区（看起来像消失）。
   if (panel.id === "size-panel") {
+    // 大小面板独立于模型：固定宽度（不随窗口压缩变形）、位置可拖动、只做可见区夹紧。
+    // 之前它用 width:auto + max-width，窗口一小滑块就被压成一条线（看起来"变形"）。
     const vr = getWindowVisibleRect();
     const margin = 10;
-    panel.style.maxWidth = `${Math.max(120, vr.right - vr.left - margin * 2)}px`;
-    const pw = Math.min(panel.offsetWidth || 260, Math.max(120, vr.right - vr.left - margin * 2));
-    panel.style.left = `${Math.round(vr.left + Math.max(margin, (vr.right - vr.left - pw) / 2))}px`;
-    panel.style.top = `${Math.round(vr.top + margin)}px`;
+    const pw = 260;
+    const ph = panel.offsetHeight || 96;
+    panel.style.position = "fixed";
+    panel.style.transform = "none";
+    panel.style.width = `${pw}px`;
+    panel.style.maxWidth = "none";
+    if (!sizePanelPos) {
+      sizePanelPos = {
+        left: vr.left + Math.max(margin, (vr.right - vr.left - pw) / 2),
+        top: vr.top + margin,
+      };
+    }
+    const left = Math.max(vr.left, Math.min(sizePanelPos.left, Math.max(vr.left, vr.right - pw)));
+    const top = Math.max(vr.top, Math.min(sizePanelPos.top, Math.max(vr.top, vr.bottom - ph)));
+    panel.style.left = `${Math.round(left)}px`;
+    panel.style.top = `${Math.round(top)}px`;
     panel.style.bottom = "auto";
     return;
   }
@@ -2880,6 +2891,32 @@ function toggleSizePanel() {
       host.classList.add("hidden");
     });
     head.append(title, val, backBtn);
+    // 按住标题栏可以自由拖动面板：位置与模型无关，允许盖在模型上
+    head.style.cursor = "move";
+    head.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      if ((e.target as HTMLElement).closest("button")) return;
+      e.stopPropagation();
+      const rect = host.getBoundingClientRect();
+      const dx = e.clientX - rect.left;
+      const dy = e.clientY - rect.top;
+      const onMove = (ev: PointerEvent) => {
+        const vr = getWindowVisibleRect();
+        const w = host.offsetWidth || 260;
+        const h = host.offsetHeight || 96;
+        const left = Math.max(vr.left, Math.min(ev.clientX - dx, Math.max(vr.left, vr.right - w)));
+        const top = Math.max(vr.top, Math.min(ev.clientY - dy, Math.max(vr.top, vr.bottom - h)));
+        sizePanelPos = { left, top };
+        host.style.left = `${Math.round(left)}px`;
+        host.style.top = `${Math.round(top)}px`;
+      };
+      const onUp = () => {
+        document.removeEventListener("pointermove", onMove);
+        document.removeEventListener("pointerup", onUp);
+      };
+      document.addEventListener("pointermove", onMove);
+      document.addEventListener("pointerup", onUp);
+    });
     host.appendChild(head);
 
     const slider = document.createElement("input");
