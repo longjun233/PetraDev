@@ -830,11 +830,15 @@ fn set_model_bounds(state: State<'_, DragState>, left: i32, top: i32, right: i32
     // 范围校验（对齐 sync_interaction_regions）：防止极端值让 8ms 拖动线程
     // 的 i32 运算溢出（debug 直接 panic 杀掉线程，release 回绕导致窗口乱跳）
     const LIMIT: i32 = 100_000;
-    let sane = [left, top, right, bottom]
-        .iter()
-        .all(|v| v.unsigned_abs() <= LIMIT as u32)
-        && right > left
-        && bottom > top;
+    // (0,0,0,0) = 自由拖动：允许模型拖出屏幕，不做边界夹紧
+    let free = left == 0 && top == 0 && right == 0 && bottom == 0;
+    let sane = free || (
+        [left, top, right, bottom]
+            .iter()
+            .all(|v| v.unsigned_abs() <= LIMIT as u32)
+            && right > left
+            && bottom > top
+    );
     if !sane {
         return;
     }
