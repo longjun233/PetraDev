@@ -291,10 +291,14 @@ function attachView(v: PetView) {
  * 窗口边长 = size，模型实际显示 = size * 0.9（模型自身的 5% 边距），
  * 这样放大到 200% 时窗口跟着变大，不会把模型裁掉。
  */
-async function setModelDisplaySize(size: number) {
+async function setModelDisplaySize(size: number, keepCenter = true) {
   // 恢复 200% 的真实大小（窗口 = 700 * 2 = 1400）；
   // 最小 320 是给「模型大小」面板留出显示空间，再小面板就放不下了。
   const s = Math.max(120, Math.round(size));
+  const prev = winSize;
+  const oldPos = keepCenter && prev !== s
+    ? await getCurrentWindow().outerPosition().catch(() => null)
+    : null;
   winSize = s;
   engine.setWindowSize(s);
   view.setScale(s);
@@ -308,10 +312,18 @@ async function setModelDisplaySize(size: number) {
   } catch {
     /* 窗口改尺寸失败不影响模型显示 */
   }
+  // 以中心为基准缩放：窗口左上角反向移动一半，模型中心的屏幕位置保持不变
+  if (oldPos && prev !== s) {
+    const sf = scaleFactor || 1;
+    const d = ((s - prev) * sf) / 2;
+    await getCurrentWindow()
+      .setPosition(new LogicalPosition((oldPos.x - d) / sf, (oldPos.y - d) / sf))
+      .catch(() => {});
+  }
 }
 
 /** 应用模型缩放：100% = 窗口 700、模型 630；窗口随缩放一起变大/变小 */
-async function applyModelScale(s: number, record = false) {
+async function applyModelScale(s: number, record = false, keepCenter = true) {
   const clamped = clamp(s, 0.2, 2.0);
   settings.modelScale = clamped;
   // 用户调整时按模型记录（切换模型时恢复各自大小）
@@ -320,7 +332,7 @@ async function applyModelScale(s: number, record = false) {
     if (key) settings.modelScales[key] = clamped;
   }
   saveSettings(settings);
-  await setModelDisplaySize(Math.max(320, Math.round(WIN * clamped)));
+  await setModelDisplaySize(Math.max(320, Math.round(WIN * clamped)), keepCenter);
 }
 
 /** 调试边框开关（红线勾勒窗口边界，观察窗口出屏与模型偏移） */
@@ -537,7 +549,7 @@ function positionPanelNearModel(panel: HTMLElement) {
     // 之前它用 width:auto + max-width，窗口一小滑块就被压成一条线（看起来"变形"）。
     const vr = getWindowVisibleRect();
     const margin = 10;
-    const pw = 180;
+    const pw = 150;
     const ph = panel.offsetHeight || 96;
     panel.style.position = "fixed";
     panel.style.transform = "none";
@@ -1009,7 +1021,7 @@ async function boot() {
   engine.setActivityLevel(settings.activity);
   engine.setTracking(settings.mouseTrack);
   // 应用持久化模型缩放（窗口尺寸 + canvas + 引擎窗口边长）
-  void applyModelScale(settings.rememberPetState ? settings.modelScale : 1);
+  void applyModelScale(settings.rememberPetState ? settings.modelScale : 1, false, false);
   if (import.meta.env.DEV) {
     // 红框是纯调试用的（窗口边界），只在 dev 建；
     // 绿框（角色边界）是「调整模型边界」面板要用的，改成按需创建，见 ensureModelBoundsEl。
@@ -2371,7 +2383,7 @@ async function toggleIdle() {
     engine.setPos(p.x / scaleFactor, p.y / scaleFactor);
     savePetPosition(p.x / scaleFactor, p.y / scaleFactor);
     // 待机：固定缩到初始大小（100%）的 40%，不跟随正常模式调过的大小
-    await setModelDisplaySize(Math.round(WIN * 0.4));
+    await setModelDisplaySize(Math.round(WIN * 0.4), false);
   }
   // 获取角色边界用于精确待机定位（left/right 也参与水平夹紧，避免贴边进入待机时瞬移出屏）
   const charBounds = view.getCharacterBounds?.();
@@ -2387,7 +2399,7 @@ async function toggleIdle() {
     }
   } else {
     // 退出待机：恢复正常模式的大小，并把窗口夹回屏幕内（否则恢复后脚会卡在屏幕下方）
-    await setModelDisplaySize(Math.round(WIN * settings.modelScale));
+    await setModelDisplaySize(Math.round(WIN * settings.modelScale), false);
     const b = view.getCharacterBounds?.();
     if (b) engine.syncModelOffset(b);
     engine.constrainPosition();
@@ -2870,16 +2882,13 @@ function toggleSizePanel() {
     const title = document.createElement("span");
     title.className = "ap-title";
     title.textContent = "模型大小";
-    const val = document.createElement("span");
-    val.className = "size-val";
-    val.textContent = `${Math.round(settings.modelScale * 100)}%`;
     const backBtn = document.createElement("button");
     backBtn.className = "as-btn";
     backBtn.textContent = "返回";
     backBtn.addEventListener("click", () => {
       host.classList.add("hidden");
     });
-    head.append(title, val, backBtn);
+    head.append(title, backBtn);
     // 按住标题栏可以自由拖动面板：位置与模型无关，允许盖在模型上
     head.style.cursor = "move";
     head.addEventListener("pointerdown", (e) => {
@@ -2891,7 +2900,7 @@ function toggleSizePanel() {
       const dy = e.clientY - rect.top;
       const onMove = (ev: PointerEvent) => {
         const vr = getWindowVisibleRect();
-        const w = host.offsetWidth || 180;
+        const w = host.offsetWidth || 150;
         const h = host.offsetHeight || 96;
         const left = Math.max(vr.left, Math.min(ev.clientX - dx, Math.max(vr.left, vr.right - w)));
         const top = Math.max(vr.top, Math.min(ev.clientY - dy, Math.max(vr.top, vr.bottom - h)));
@@ -2907,6 +2916,12 @@ function toggleSizePanel() {
       document.addEventListener("pointerup", onUp);
     });
     host.appendChild(head);
+
+    // 竖版：百分比单独一行、居中，滑块占满面板宽度
+    const val = document.createElement("div");
+    val.className = "size-val";
+    val.textContent = `${Math.round(settings.modelScale * 100)}%`;
+    host.appendChild(val);
 
     const slider = document.createElement("input");
     slider.type = "range";

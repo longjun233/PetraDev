@@ -595,7 +595,8 @@ export class BehaviorEngine {
     // 现在上身/下身出屏交给用户拖拽自己控制。
     const loX = a.left - this.win * 0.5;
     const hiX = a.left + a.width - this.win * 0.5;
-    const loY = a.top - this.win * 0.5;
+    // 上边不穿越（保持模型头顶在屏幕内），左 / 右 / 下允许出屏一半
+    const loY = a.top;
     const hiY = a.top + a.height - this.win * 0.5;
     if (this.pos.x < loX) { this.pos.x = loX; this.vel.x *= -BOUNCE_DAMP; }
     if (this.pos.x > hiX) { this.pos.x = hiX; this.vel.x *= -BOUNCE_DAMP; }

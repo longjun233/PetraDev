@@ -362,7 +362,8 @@ body {
   font-size: 13px;
   font-weight: 700;
   color: #7a4ea0;
-  margin-left: auto;
+  text-align: center;
+  margin: 2px 0;
 }
 
 .action-panel .size-slider {
