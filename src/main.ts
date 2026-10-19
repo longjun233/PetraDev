@@ -284,7 +284,29 @@ function attachView(v: PetView) {
   v.attachTo(stage, app.app.stage);
 }
 
-/** 应用模型缩放：窗口固定 700x700，模型显示大小按基准 300px 缩放 */
+/**
+ * 设定桌宠显示尺寸：窗口、画布、模型、引擎保持一致。
+ * 窗口边长 = size，模型实际显示 = size * 0.9（模型自身的 5% 边距），
+ * 这样放大到 200% 时窗口跟着变大，不会把模型裁掉。
+ */
+async function setModelDisplaySize(size: number) {
+  const s = Math.max(120, Math.round(size));
+  winSize = s;
+  engine.setWindowSize(s);
+  view.setScale(s);
+  app.app.renderer.resize(s, s);
+  requestInteractionRegionSync(true);
+  try {
+    await invoke("set_window_size", {
+      width: Math.round(s * scaleFactor),
+      height: Math.round(s * scaleFactor),
+    });
+  } catch {
+    /* 窗口改尺寸失败不影响模型显示 */
+  }
+}
+
+/** 应用模型缩放：100% = 窗口 700、模型 630；窗口随缩放一起变大/变小 */
 async function applyModelScale(s: number, record = false) {
   const clamped = clamp(s, 0.2, 2.0);
   settings.modelScale = clamped;
@@ -294,10 +316,7 @@ async function applyModelScale(s: number, record = false) {
     if (key) settings.modelScales[key] = clamped;
   }
   saveSettings(settings);
-  const modelW = Math.round(WIN * clamped); // 100% = 窗口边长（当前默认大小）
-  winSize = WIN; // 窗口始终 700x700
-  engine.setWindowSize(WIN);
-  view.setScale(modelW);
+  await setModelDisplaySize(Math.round(WIN * clamped));
 }
 
 /** 调试边框开关（红线勾勒窗口边界，观察窗口出屏与模型偏移） */
@@ -2332,8 +2351,8 @@ async function toggleIdle() {
     const p = await getCurrentWindow().outerPosition();
     engine.setPos(p.x / scaleFactor, p.y / scaleFactor);
     savePetPosition(p.x / scaleFactor, p.y / scaleFactor);
-    // 待机：模型缩到当前大小的 1/4（大模型按原尺寸贴底会露出过多，缩小后像坐在屏幕右下角）
-    view.setScale(Math.round(WIN * settings.modelScale * 0.25));
+    // 待机：固定缩到初始大小（100%）的 40%，不跟随正常模式调过的大小
+    await setModelDisplaySize(Math.round(WIN * 0.4));
   }
   // 获取角色边界用于精确待机定位（left/right 也参与水平夹紧，避免贴边进入待机时瞬移出屏）
   const charBounds = view.getCharacterBounds?.();
@@ -2348,8 +2367,19 @@ async function toggleIdle() {
       engine.markIdleSettled();
     }
   } else {
-    // 退出待机：恢复原来的模型大小
-    view.setScale(Math.round(WIN * settings.modelScale));
+    // 退出待机：恢复正常模式的大小，并把窗口夹回屏幕内（否则恢复后脚会卡在屏幕下方）
+    await setModelDisplaySize(Math.round(WIN * settings.modelScale));
+    const b = view.getCharacterBounds?.();
+    if (b) engine.syncModelOffset(b);
+    engine.constrainPosition();
+    const p = engine.position;
+    // 窗口本身也夹回工作区：恢复大窗口后如果有一半在屏幕外，模型会被窗口边缘裁掉
+    const a = engine.workArea;
+    if (a) {
+      p.x = Math.max(a.left, Math.min(p.x, a.left + a.width - winSize));
+      p.y = Math.max(a.top, Math.min(p.y, a.top + a.height - winSize));
+    }
+    await getCurrentWindow().setPosition(new LogicalPosition(p.x, p.y));
   }
   toast(settings.idleMode ? "困了，先眯一会儿…" : "醒啦～");
 }

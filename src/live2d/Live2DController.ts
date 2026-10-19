@@ -101,7 +101,7 @@ export class Live2DController implements PetView {
     ctrl.baseScale = desiredScale;
     // displayW 是「模型目标显示边长」：默认铺满窗口（700），
     // 「模型大小」滑条在这个基准上按比例缩放
-    ctrl.displayW = window.innerWidth || 700;
+    ctrl.displayW = 700;
     ctrl.fit();
     // 首帧前强制模型完整更新一次：Cubism 的裁剪遮罩（clipping）与顶点都要等
     // internalModel.update() 之后才就绪，否则大模型会先露出身体、头部部件
@@ -125,10 +125,9 @@ export class Live2DController implements PetView {
     m.scale.set(1, 1);
     const cw = (m as unknown as { width?: number }).width || 300;
     const ch = (m as unknown as { height?: number }).height || 300;
-    const W = window.innerWidth || 700;
-    const H = window.innerHeight || 700;
-    // displayW = 目标显示边长（stage 坐标），由「模型大小」面板控制；
-    // 100% 等于窗口边长 700，即默认铺满（与改动前一致）
+    // 窗口/画布边长 = displayW（main 会同步 resize），模型显示 90%，留 5% 边距
+    const W = Math.max(120, this.displayW);
+    const H = W;
     const target = Math.max(50, this.displayW);
     const s = Math.min((target * 0.9) / cw, (target * 0.9) / ch) * this.baseScale;
     m.scale.set(s, s);
@@ -154,10 +153,9 @@ export class Live2DController implements PetView {
     this.click = Math.max(0, this.click - dt * 6);
     this.modelOffsetX = d.modelOffsetX || 0;
     this.modelOffsetY = d.modelOffsetY || 0;
-    const W = window.innerWidth || 700;
-    const H = window.innerHeight || 700;
-    // 模型始终以窗口中心为基准定位（displayW 只决定大小，不决定位置）
-    m.position.set(W / 2 + this.modelOffsetX, H / 2 + this.modelOffsetY);
+    const W = Math.max(120, this.displayW);
+    // 窗口边长 = displayW，模型以窗口中心定位
+    m.position.set(W / 2 + this.modelOffsetX, W / 2 + this.modelOffsetY);
     if (Math.abs(d.vx) > 0.02) this.lastVx = d.vx;
     const wantMirror = this.lastVx < 0 ? -1 : 1;
     if (wantMirror !== this.mirror) {

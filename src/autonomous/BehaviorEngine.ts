@@ -560,13 +560,24 @@ export class BehaviorEngine {
     const mb = wy + this.modelOffset.y + b.bottom;
     let offX = this.modelOffset.x;
     let offY = this.modelOffset.y;
-    if (ml < a.left) offX += a.left - ml;
-    else if (mr > a.left + a.width) offX -= mr - (a.left + a.width);
-    if (mt < a.top) offY += a.top - mt;
-    else if (mb > a.top + a.height) offY -= mb - (a.top + a.height);
-    // 限制在窗口内
-    offX = clamp(offX, -b.left, this.win - b.right);
-    offY = clamp(offY, -b.top, this.win - b.bottom);
+    // 模型比窗口还大时（窗口 resize 的过渡帧，或缩放上限被临时突破），
+    // clamp 的上下限会反过来，反而把模型推到一边 → 直接保持居中。
+    const tooWide = b.right - b.left >= this.win;
+    const tooTall = b.bottom - b.top >= this.win;
+    if (!tooWide) {
+      if (ml < a.left) offX += a.left - ml;
+      else if (mr > a.left + a.width) offX -= mr - (a.left + a.width);
+      offX = clamp(offX, -b.left, this.win - b.right);
+    } else {
+      offX = 0;
+    }
+    if (!tooTall) {
+      if (mt < a.top) offY += a.top - mt;
+      else if (mb > a.top + a.height) offY -= mb - (a.top + a.height);
+      offY = clamp(offY, -b.top, this.win - b.bottom);
+    } else {
+      offY = 0;
+    }
     // 保存原始 offset（约束/Rust 用），渲染用平滑后的 modelOffset
     this.rawOffset.x = offX;
     this.rawOffset.y = offY;
@@ -587,10 +598,15 @@ export class BehaviorEngine {
     const hiX = a.left + a.width - sox - b.right;
     const loY = a.top - soy - b.top;
     const hiY = a.top + a.height - soy - b.bottom;
-    if (this.pos.x < loX) { this.pos.x = loX; this.vel.x *= -BOUNCE_DAMP; }
-    if (this.pos.x > hiX) { this.pos.x = hiX; this.vel.x *= -BOUNCE_DAMP; }
-    if (this.pos.y < loY) { this.pos.y = loY; this.vel.y *= -BOUNCE_DAMP; }
-    if (this.pos.y > hiY) { this.pos.y = hiY; this.vel.y *= -BOUNCE_DAMP; }
+    // 模型比窗口大时 lo > hi，夹紧没有意义（会把窗口推到反向边界）
+    if (loX <= hiX) {
+      if (this.pos.x < loX) { this.pos.x = loX; this.vel.x *= -BOUNCE_DAMP; }
+      if (this.pos.x > hiX) { this.pos.x = hiX; this.vel.x *= -BOUNCE_DAMP; }
+    }
+    if (loY <= hiY) {
+      if (this.pos.y < loY) { this.pos.y = loY; this.vel.y *= -BOUNCE_DAMP; }
+      if (this.pos.y > hiY) { this.pos.y = hiY; this.vel.y *= -BOUNCE_DAMP; }
+    }
   }
 
   /** 窗口边长（模型缩放时跟随更新） */
