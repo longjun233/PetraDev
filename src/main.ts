@@ -2934,12 +2934,15 @@ function toggleSizePanel() {
     slider.addEventListener("input", () => {
       val.textContent = `${slider.value}%`;
       const now = performance.now();
-      if (now - lastApply < 80) return; // 节流，避免高频窗口 resize 抖动
+      if (now - lastApply < 60) return;
       lastApply = now;
-      void applyModelScale(Number(slider.value) / 100);
+      // 拖动过程中不改窗口位置：窗口一移动，面板跟着动，鼠标相对滑块的位置
+      // 就会跳，看起来就是"按键不固定 + 模型剧烈波动"。这里只改尺寸，松手后再居中。
+      void applyModelScale(Number(slider.value) / 100, false, false);
     });
     slider.addEventListener("change", () => {
-      void applyModelScale(Number(slider.value) / 100, true);
+      // 松手：按中心对齐（窗口左上角反向移动一半），并记入当前模型
+      void applyModelScale(Number(slider.value) / 100, true, true);
     });
     host.appendChild(slider);
   };
