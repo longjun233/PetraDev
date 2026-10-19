@@ -29,11 +29,8 @@ import { trackEvent, incrementInteractionCount, trackAppUse, trackMusic } from "
 import { checkAndGenerateDiary, takeDiaryStorageWarning } from "./features/diary/DiaryManager";
 import { formatWeatherHtml } from "./features/weather/WeatherFormat";
 import { toggleDiaryPanel } from "./features/diary/DiaryPanel";
-import { hasDrawnToday } from "./features/card/DailyCardManager";
-import { toggleDailyCardPanel } from "./features/card/DailyCardPanel";
 
 import { toast } from "./ui/Toast";
-import { ttsPlayer } from "./tts/TTSPlayer";
 import { copyText } from "./ui/clipboard";
 import { setVisibleRect, clampIntoRect, fitSizeInRect } from "./ui/visible";
 import { infoPanelPlacement } from "./ui/infoPanelPlacement";
@@ -43,7 +40,6 @@ import { ACTIVITY_LABEL, nextActivity, type ActivityLevel } from "./utils/settin
 import { astrobotOn } from "./bridges/astrobot";
 import { openAssistant, repositionAssistantBubbles } from "./assistant/AssistantPanel";
 import { setLifecycle, triggerProactive, closeAssistant, clearBubbles, clearApiKeyCache, clearHistory, isAssistantBusy, sayPetLine, setModelRectProvider, fitBubbleHeights } from "./assistant/AssistantPanel";
-import { getSpeechRecognizer } from "./asr/SpeechRecognizer";
 import { repositionLyricBubble } from "./music/LyricBubble";
 import {
   adjustLyricOffset,
@@ -56,11 +52,7 @@ import { buildHourlyQuietMenuItems } from "./features/hourly/HourlyQuietRows";
 import { listModels, PROVIDERS, getUsageStats, resetUsageStats } from "./assistant/AssistantClient";
 import { registerEmotionReactor, reactToTouch, getMoodDriverValue, emotionExpression, emotionToAction } from "./assistant/EmotionEngine";
 import { showEmotionPopup } from "./assistant/EmotionPopups";
-import { listMiniGames, openMiniGame, closeMiniGame, isMiniGameOpen, activeMiniGameId, setMiniGameLifecycle } from "./games/host";
 import { startMusicLyrics, stopMusicLyrics, noteAudioLevel, isSinging, setLyricsTranslate } from "./music/NowPlaying";
-import { registerRiichiGame } from "./games/riichi";
-import { clearPetTalkKeyCache } from "./games/riichi/petTalk";
-import { RIICHI_SOUND_SETTINGS_EVENT } from "./games/riichi/sound";
 import { getUnreadAnnouncement, markAnnounced } from "./features/Announcement";
 import { checkForUpdate, performUpdate, UpdateCheckErrorExt } from "./updater/UpdateManager";
 import { setupReminder, getReminders, removeReminder, openReminderModal, fmtReminderTime } from "./ui/ReminderPanel";
@@ -271,18 +263,6 @@ class PIXIApp {
 const app = new PIXIApp();
 let view!: PetView;
 let settings: Settings = loadSettings();
-let ttsApiKey = "";
-invoke<string>("get_tts_key").then(k => {
-  ttsApiKey = k;
-  ttsPlayer.setConfig(settings.tts.enabled, k, settings.tts.speakerId, settings.assistant.outputLanguage ?? "");
-}).catch(() => {});
-window.addEventListener(RIICHI_SOUND_SETTINGS_EVENT, () => {
-  const saved = loadSettings();
-  settings.gameSound = saved.gameSound;
-  settings.gameSoundVolume = saved.gameSoundVolume;
-  settings.gameMusic = saved.gameMusic;
-  settings.gameMusicVolume = saved.gameMusicVolume;
-});
 let engine!: BehaviorEngine;
 let scaleFactor = 1; // 物理↔逻辑坐标转换（系统缩放）
 let winSize = WIN; // 当前窗口边长（模型缩放时跟随，默认 300）
@@ -998,22 +978,6 @@ async function boot() {
   setLifecycle(
     () => engine.suspend(3600_000),
     () => engine.suspend(IDLE_AFTER_DRAG_MS),
-  );
-  // 小游戏打开：暂停漫游、收起对话气泡；关闭：恢复正常漫游
-  setMiniGameLifecycle(
-    () => {
-      engine.suspend(3600_000);
-      closeAssistant();
-      clearBubbles();
-      // 日记素材：今天陪你玩过什么
-      const id = activeMiniGameId();
-      const def = listMiniGames().find((g) => g.id === id);
-      const label = def ? `${def.emoji}${def.name}` : "小游戏";
-      trackEvent({ type: "game", summary: `陪你玩了${label}` });
-    },
-    () => {
-      engine.suspend(IDLE_AFTER_DRAG_MS);
-    },
   );
   // 情感引擎 → 角色表现：AI/用户情绪驱动表情 + 动作（本地规则，零 token）
   registerEmotionReactor((tag) => {
@@ -1975,135 +1939,6 @@ function keepDialogFullyVisible(dlg: HTMLElement, margin = 8): void {
   dlg.style.top = `${Math.round(pos.top)}px`;
 }
 
-/** 语音设置弹窗 */
-function showTtsDialog(savedKey: string) {
-  document.getElementById("tts-dlg")?.remove();
-  const dlg = document.createElement("div");
-  dlg.id = "tts-dlg";
-  dlg.setAttribute("data-petra-interactive", "true");
-  // 用 width 而不是 min-width：min-width 的优先级高于 max-width，
-  // keepDialogFullyVisible 给的上限会被它顶掉，弹窗就还是缩不下来
-  dlg.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#2a2a2a;color:#fff;padding:24px;border-radius:12px;z-index:999999;width:320px;box-sizing:border-box;font-size:13px;box-shadow:0 8px 32px rgba(0,0,0,0.6);pointer-events:auto;";
-  dlg.innerHTML = `
-    <div style="font-weight:bold;font-size:16px;margin-bottom:16px;">语音设置</div>
-    <div style="color:#999;margin-bottom:4px;">API Key</div>
-    <input id="tts-k" type="password" value="${savedKey.replace(/"/g,'&quot;')}" style="width:100%;padding:8px;border-radius:6px;border:1px solid #555;background:#333;color:#fff;box-sizing:border-box;margin-bottom:14px;outline:none;">
-    <div style="color:#999;margin-bottom:4px;">音色 ID</div>
-    <input id="tts-s" type="text" value="${settings.tts.speakerId.replace(/"/g,'&quot;')}" style="width:100%;padding:8px;border-radius:6px;border:1px solid #555;background:#333;color:#fff;box-sizing:border-box;margin-bottom:18px;outline:none;">
-    <div style="display:flex;gap:10px;justify-content:flex-end;">
-      <button id="tts-c" style="padding:8px 20px;border-radius:6px;border:none;background:#555;color:#fff;cursor:pointer;">取消</button>
-      <button id="tts-ok" style="padding:8px 20px;border-radius:6px;border:none;background:#5a9;color:#fff;cursor:pointer;">保存</button>
-    </div>
-  `;
-  document.body.appendChild(dlg);
-  keepDialogFullyVisible(dlg);
-  const close = () => { dlg.remove(); };
-  (dlg.querySelector("#tts-c") as HTMLElement).onclick = close;
-  (dlg.querySelector("#tts-ok") as HTMLElement).onclick = async () => {
-    const k = (dlg.querySelector("#tts-k") as HTMLInputElement).value.trim();
-    const s = (dlg.querySelector("#tts-s") as HTMLInputElement).value.trim();
-    await invoke("set_tts_key", { apiKey: k }).catch(() => {});
-    settings.tts.speakerId = s;
-    saveSettings(settings);
-    ttsApiKey = k;
-    ttsPlayer.setConfig(settings.tts.enabled, k, s, settings.assistant.outputLanguage ?? "");
-    close();
-    toast("语音设置已保存");
-  };
-}
-
-/**
- * 语音识别（ASR）设置弹窗。
- *
- * 只有"在线识别"这一条路需要用户提供 Key：Windows 的浏览器原生识别不需要，
- * Mac/Linux（以及原生识别被判定不可用后的 Windows）走 Rust 侧转发硅基流动。
- * Key 交给 Rust 存（DPAPI / 钥匙串 / 600 文件），跟 TTS / 聊天 Key 一个待遇，
- * 前端只在弹窗里读回来做回填。
- */
-async function showAsrDialog() {
-  document.getElementById("asr-dlg")?.remove();
-  const savedKey = await invoke<string>("get_asr_key").catch(() => "");
-  const online = getSpeechRecognizer().getBackendName() === "siliconflow";
-  const backendLine = online
-    ? "在线识别（硅基流动）—— 已内置默认 Key，开箱即用；填自己的会覆盖默认（加密存在本机）。"
-    : "浏览器原生识别（Windows）—— 不需要 Key。若原生识别不可用会自动切到在线识别。";
-  const inputStyle = "width:100%;padding:8px;border-radius:6px;border:1px solid #555;background:#333;color:#fff;box-sizing:border-box;margin-bottom:18px;outline:none;";
-  const dlg = document.createElement("div");
-  dlg.id = "asr-dlg";
-  dlg.setAttribute("data-petra-interactive", "true");
-  dlg.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#2a2a2a;color:#fff;padding:24px;border-radius:12px;z-index:999999;width:340px;box-sizing:border-box;font-size:13px;box-shadow:0 8px 32px rgba(0,0,0,0.6);pointer-events:auto;";
-  dlg.innerHTML = `
-    <div style="font-weight:bold;font-size:16px;margin-bottom:12px;">语音识别设置</div>
-    <div style="color:#999;margin-bottom:14px;line-height:1.6;">${backendLine}</div>
-    <div style="color:#999;margin-bottom:4px;">麦克风权限</div>
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
-      <div id="asr-perm-state" style="flex:1;line-height:1.5;"></div>
-      <button id="asr-perm-btn" style="padding:6px 14px;border-radius:6px;border:none;background:#5a9;color:#fff;cursor:pointer;white-space:nowrap;"></button>
-    </div>
-    <div id="asr-perm-note" style="color:#888;font-size:11.5px;line-height:1.5;margin-bottom:16px;"></div>
-    <div style="color:#999;margin-bottom:4px;">硅基流动 API Key（留空 = 用内置默认）</div>
-    <input id="asr-k" type="password" placeholder="sk-..." value="${savedKey.replace(/"/g, "&quot;")}" style="${inputStyle}">
-    <div style="display:flex;gap:10px;justify-content:flex-end;">
-      <button id="asr-c" style="padding:8px 20px;border-radius:6px;border:none;background:#555;color:#fff;cursor:pointer;">取消</button>
-      <button id="asr-ok" style="padding:8px 20px;border-radius:6px;border:none;background:#5a9;color:#fff;cursor:pointer;">保存</button>
-    </div>
-  `;
-  document.body.appendChild(dlg);
-  keepDialogFullyVisible(dlg);
-  const close = () => { dlg.remove(); };
-
-  // ---- 麦克风权限：应用内开关（立即生效）+ 同步 Windows 隐私设置 ----
-  const stateEl = dlg.querySelector("#asr-perm-state") as HTMLElement;
-  const btnEl = dlg.querySelector("#asr-perm-btn") as HTMLButtonElement;
-  const noteEl = dlg.querySelector("#asr-perm-note") as HTMLElement;
-  const renderPermission = async () => {
-    // 读模块级 settings（而不是 loadSettings() 的副本）：这里和别处的保存
-    // 都写同一个对象，避免"改完又被别的 saveSettings(settings) 覆盖回去"
-    const allowed = settings.asr.micAllowed;
-    const os = await invoke<{ global: string; app: string }>("get_mic_permission").catch(() => null);
-    stateEl.innerHTML = allowed
-      ? '<span style="color:#6c6;">已开启</span>'
-      : '<span style="color:#e08;">已关闭</span><span style="color:#999;">（点 🎤 会直接提示权限已关）</span>';
-    btnEl.textContent = allowed ? "关闭麦克风" : "开启麦克风";
-    btnEl.style.background = allowed ? "#555" : "#5a9";
-    const bits: string[] = [];
-    if (os && os.global === "deny") bits.push("⚠ 系统总开关是「拒绝」，语音输入用不了 —— 点「开启麦克风」会一并改回允许");
-    if (os && os.app === "deny") bits.push("⚠ Windows 里本应用被设为「拒绝」（开启时会清掉）");
-    if (os && os.global === "unsupported") bits.push("当前系统不支持在应用内改权限（macOS 只能在“系统设置 → 隐私与安全性 → 麦克风”里改）");
-    bits.push("应用内开关立即生效，同时会同步到 Windows 的麦克风隐私设置（对已经在跑的窗口，系统那一层要重启应用后才算数）");
-    noteEl.textContent = bits.join("\n");
-    noteEl.style.whiteSpace = "pre-line";
-  };
-  btnEl.onclick = async () => {
-    const next = !settings.asr.micAllowed;
-    settings.asr.micAllowed = next; // 先改模块级对象再落盘（否则会被别处的 settings 写回）
-    saveSettings(settings);
-    if (!next) getSpeechRecognizer().cancel(); // 关掉时顺手停掉正在听的
-    let osMsg = "";
-    try {
-      osMsg = await invoke<string>("set_mic_permission", { allow: next });
-    } catch (e) {
-      osMsg = `应用内已${next ? "开启" : "关闭"}，但系统权限没改成：${e instanceof Error ? e.message : String(e)}`;
-    }
-    await renderPermission();
-    toast(next ? `麦克风已开启（${osMsg}）` : `麦克风已关闭（${osMsg}）`);
-  };
-  await renderPermission();
-
-  (dlg.querySelector("#asr-c") as HTMLElement).onclick = close;
-  (dlg.querySelector("#asr-ok") as HTMLElement).onclick = async () => {
-    const k = (dlg.querySelector("#asr-k") as HTMLInputElement).value.trim();
-    try {
-      await invoke("set_asr_key", { apiKey: k });
-    } catch (e) {
-      toast(`保存失败：${e instanceof Error ? e.message : String(e)}`, "warn");
-      return;
-    }
-    close();
-    toast(k ? "语音识别 Key 已保存" : "已清除语音识别 Key");
-  };
-}
-
 /** 歌词同步微调的显示文案：0 就是"正常"，正数=提前 */
 function fmtLyricOffset(ms: number): string {
   if (!ms) return "正常";
@@ -2381,54 +2216,6 @@ function buildMenu(engine: BehaviorEngine) {
       onPick: () => void toggleAssistantSettings(),
     },
     {
-      id: "tts-toggle",
-      label: "🔊 语音输出",
-      state: settings.tts.enabled ? "开" : "关",
-      onPick: () => {
-        settings.tts.enabled = !settings.tts.enabled;
-        saveSettings(settings);
-        ttsPlayer.setConfig(settings.tts.enabled, ttsApiKey, settings.tts.speakerId, settings.assistant.outputLanguage ?? "");
-        toast(settings.tts.enabled ? "语音输出已开启" : "语音输出已关闭");
-      },
-    },
-    {
-      id: "tts-config",
-      label: "语音设置",
-      onPick: async () => {
-        const savedKey = await invoke<string>("get_tts_key").catch(() => "");
-        showTtsDialog(savedKey);
-      },
-    },
-    {
-      id: "tts-test",
-      label: "测试语音",
-      onPick: () => {
-        // 语音输出没开的时候点测试：直接提示，不自动打开、不花钱调API
-        if (!settings.tts.enabled) {
-          toast("请先开启语音输出再测试", "warn");
-          return;
-        }
-        const lang = settings.assistant.outputLanguage ?? "";
-        ttsPlayer.setConfig(true, ttsApiKey, settings.tts.speakerId, lang);
-        const testText: Record<string, string> = {
-          en: "Hello, voice test successful.",
-          ja: "こんにちは、音声テスト成功しました。",
-          ko: "안녕하세요, 음성 테스트 성공했습니다.",
-          fr: "Bonjour, test vocal réussi.",
-          es: "Hola, prueba de voz exitosa.",
-          de: "Hallo, Sprachtest erfolgreich.",
-          ru: "Привет, тест голоса успешен.",
-        };
-        ttsPlayer.pushDelta(testText[lang] ?? "你好，语音测试成功。");
-        ttsPlayer.flush();
-      },
-    },
-    {
-      id: "asr-config",
-      label: "🎤 语音识别设置",
-      onPick: () => void showAsrDialog(),
-    },
-    {
       id: "chat-history",
       label: "对话记录",
       onPick: () => toggleChatHistory(),
@@ -2468,73 +2255,11 @@ function buildMenu(engine: BehaviorEngine) {
         },
       ],
     },
-    { id: "daily-card", label: "🎴 今日抽卡", state: hasDrawnToday() ? "已抽" : "未抽", onPick: () => toggleDailyCardPanel() },
-    {
-      id: "minigames",
-      label: "🎮 小游戏",
-      state: isMiniGameOpen() ? "进行中" : undefined,
-      submenu: [
-        ...listMiniGames().map((g) => ({
-          id: "mg-" + g.id,
-          label: g.emoji + " " + g.name,
-          onPick: () => {
-            if (openMiniGame(g.id)) toast("开局！和桌宠来一把～");
-          },
-        })),
-        {
-          id: "mg-talk",
-          label: "麻将 AI 互动",
-          state: settings.gameTalk ? "开" : "关",
-          onPick: () => {
-            settings.gameTalk = !settings.gameTalk;
-            saveSettings(settings);
-            toast(
-              settings.gameTalk
-                ? "麻将桌上的桌宠会实时点评牌况（需要 API Key）"
-                : "麻将桌改为只用固定台词（零 token）",
-            );
-          },
-        },
-        {
-          id: "mg-sound",
-          label: "麻将游戏音效",
-          state: settings.gameSound ? `${Math.round(settings.gameSoundVolume * 100)}%` : "关",
-          onPick: () => {
-            settings.gameSound = !settings.gameSound;
-            saveSettings(settings);
-            window.dispatchEvent(new Event(RIICHI_SOUND_SETTINGS_EVENT));
-            toast(settings.gameSound ? `麻将音效已开启（${Math.round(settings.gameSoundVolume * 100)}%）` : "麻将音效已关闭");
-          },
-        },
-        {
-          id: "mg-music",
-          label: "麻将对局音乐",
-          state: settings.gameMusic ? `${Math.round(settings.gameMusicVolume * 100)}%` : "关",
-          onPick: () => {
-            settings.gameMusic = !settings.gameMusic;
-            saveSettings(settings);
-            window.dispatchEvent(new Event(RIICHI_SOUND_SETTINGS_EVENT));
-            toast(settings.gameMusic ? `麻将音乐已开启（${Math.round(settings.gameMusicVolume * 100)}%）` : "麻将音乐已关闭");
-          },
-        },
-        { id: "mg-close", label: "关闭游戏", onPick: () => closeMiniGame() },
-      ],
-    },
-    {
-      id: "feedback",
-      label: "反馈",
-      onPick: () => openFeedbackInput(),
-    },
 
     {
       id: "update",
       label: "检查更新",
       onPick: () => void checkUpdate(true),
-    },
-    {
-      id: "website",
-      label: "官网",
-      onPick: () => void invoke("open_url", { url: "http://petra.xin/" }),
     },
     {
       id: "hide",
@@ -2597,12 +2322,10 @@ async function toggleIdle() {
     infoPanelEl?.classList.add("hidden");
     // 关闭所有面板类元素：模型面板/卡牌/日记/大小/边界/调节等
     document.querySelectorAll(".model-panel:not(.hidden)").forEach(el => el.classList.add("hidden"));
-    // 关闭独立面板：小助手设置/对话记录/反馈/动作调试/TTS设置
+    // 关闭独立面板：小助手设置/对话记录/动作调试
     document.getElementById("assistant-settings")?.classList.add("hidden");
     document.getElementById("chat-history-panel")?.classList.add("hidden");
-    document.getElementById("feedback-panel")?.classList.add("hidden");
     document.getElementById("action-debug")?.classList.add("hidden");
-    document.getElementById("tts-dlg")?.remove();
     // 关闭右键菜单
     document.getElementById("menu")?.classList.add("hidden");
     // 同步窗口实际位置（逻辑），保证就近边缘判断准确（引擎 pos 可能因漫游漂移）
@@ -2859,7 +2582,7 @@ function chimeOptions(): { quietStart: number; quietEnd: number } {
 
 /** 整点到了：打游戏 / 助手正在回答时就不打扰 */
 function onHourlyChime(line: string): void {
-  if (isMiniGameOpen() || isAssistantBusy()) return;
+  if (isAssistantBusy()) return;
   sayPetLine(line);
 }
 
@@ -2996,13 +2719,12 @@ function updateInfoPanelContent(el: HTMLElement, companion: string, weather: str
       updateInfoPanelContent(el, c, w);
     });
   });
-  // 功能按钮（日记、抽卡）
+  // 功能按钮（日记）
   el.querySelectorAll(".info-feat-btn").forEach((btn) => {
     btn.addEventListener("pointerdown", (e) => {
       e.stopPropagation();
       const feat = (btn as HTMLElement).dataset.feat;
       if (feat === "diary") toggleDiaryPanel();
-      if (feat === "card") toggleDailyCardPanel();
     });
   });
   // 天气异步返回或待办变化后，内容高度会改变，需重新测量布局。
@@ -3597,18 +3319,6 @@ async function toggleAssistantSettings() {
     greetRow.append(greetLabel, greetInput, greetUnit);
     host.appendChild(greetRow);
 
-    const gameTalk = document.createElement("input");
-    gameTalk.type = "checkbox";
-    gameTalk.checked = settings.gameTalk === true;
-    gameTalk.setAttribute("aria-describedby", "game-talk-help");
-    const gameTalkRow = mkRow("AI 对局互动", gameTalk);
-    gameTalkRow.title = "开启后仅在麻将关键事件发送精简公开牌况，并消耗已配置服务的 API 额度";
-    const gameTalkHelp = document.createElement("div");
-    gameTalkHelp.id = "game-talk-help";
-    gameTalkHelp.className = "as-privacy";
-    gameTalkHelp.textContent = "关闭时使用本地台词。开启后仅在关键牌局事件发送精简可知牌况，会消耗 API 额度；不会发送玩家暗牌或牌山顺序。";
-    host.appendChild(gameTalkHelp);
-
     const fetchBtn = document.createElement("button");
     fetchBtn.className = "as-btn";
     fetchBtn.textContent = "自动获取模型";
@@ -3721,7 +3431,6 @@ async function toggleAssistantSettings() {
         .split(/\r?\n/)
         .map((l) => l.trim())
         .filter((l) => l !== "" && !l.startsWith("#"));
-      settings.gameTalk = gameTalk.checked;
       // 天气城市变了就清掉缓存，下次打开信息板立刻重新取
       const cityNext = weatherCity.value.trim();
       if (cityNext !== settings.weatherCity) cachedWeather = null;
@@ -3738,11 +3447,9 @@ async function toggleAssistantSettings() {
       try {
         await invoke("set_api_key", { apiKey: key.value.trim() });
         clearApiKeyCache();
-        clearPetTalkKeyCache();
       } catch (e) {
         toast(`API Key 保存失败：${e}`, "warn");
       }
-      ttsPlayer.setConfig(settings.tts.enabled, ttsApiKey, settings.tts.speakerId, settings.assistant.outputLanguage ?? "");
       host.classList.add("hidden");
       toast("小助手设置已保存");
     });
@@ -3762,102 +3469,6 @@ async function toggleAssistantSettings() {
     document.body.appendChild(p);
     p.classList.remove("hidden");
     positionPanelNearModel(p);
-  }
-}
-
-// ---------- 反馈面板 ----------
-function openFeedbackInput() {
-  const panel = document.getElementById("feedback-panel") as HTMLElement | null;
-  if (panel && !panel.classList.contains("hidden")) return;
-
-  const render = (host: HTMLElement) => {
-    clearElement(host);
-    const title = document.createElement("div");
-    title.className = "mp-title";
-    title.textContent = "反馈";
-    host.appendChild(title);
-
-    const desc = document.createElement("div");
-    desc.className = "mp-hint";
-    desc.textContent =
-      "告诉我们遇到了什么问题，会自动附上本次启动的运行日志。提交后直达飞书反馈群；网络发不出去时会导出到桌面，也可以直接「复制」贴给我。";
-    host.appendChild(desc);
-
-    const ta = document.createElement("textarea");
-    ta.className = "as-input as-persona";
-    ta.rows = 5;
-    ta.placeholder = "描述你遇到的问题…";
-    host.appendChild(ta);
-
-    const btns = document.createElement("div");
-    btns.className = "as-set-btns";
-    const back = document.createElement("button");
-    back.className = "as-btn";
-    back.textContent = "返回";
-    back.addEventListener("click", () => {
-      host.classList.add("hidden");
-    });
-    const copy = document.createElement("button");
-    copy.className = "as-btn";
-    copy.textContent = "复制";
-    copy.title = "复制描述 + 环境信息 + 本次启动日志，可直接粘给别人";
-    copy.addEventListener("click", () => {
-      const t = ta.value.trim();
-      if (!t) {
-        toast("请先描述一下遇到的问题", "warn");
-        return;
-      }
-      void invoke<string>("feedback_text", { message: t })
-        .then((text) => copyText(text))
-        .then((ok) => toast(ok ? "反馈内容已复制（含本次启动日志）" : "复制失败，请手动选中复制", ok ? "info" : "warn"))
-        .catch((e) => toast(`复制失败：${e}`, "warn"));
-    });
-    const send = document.createElement("button");
-    send.className = "as-btn as-btn-primary";
-    send.textContent = "发送";
-    send.addEventListener("click", () => {
-      const t = ta.value.trim();
-      if (!t) {
-        toast("请先描述一下遇到的问题", "warn");
-        return;
-      }
-      host.classList.add("hidden");
-      void doSendFeedback(t);
-    });
-    btns.append(back, copy, send);
-    host.appendChild(btns);
-  };
-
-  if (panel) {
-    render(panel);
-    panel.classList.remove("hidden");
-  } else {
-    const p = document.createElement("div");
-    p.id = "feedback-panel";
-    p.className = "model-panel hidden";
-    p.addEventListener("pointerdown", (e) => e.stopPropagation());
-    render(p);
-    document.body.appendChild(p);
-    p.classList.remove("hidden");
-      positionPanelNearModel(p);
-  }
-}
-
-async function doSendFeedback(message: string) {
-  toast("正在发送反馈…");
-  try {
-    const msg = await invoke<string>("send_feedback", { message });
-    toast(msg);
-    return;
-  } catch (e) {
-    // 飞书推送失败（网络/代理问题）：说清原因，再走桌面导出
-    toast(`飞书推送不可用：${e}，已改为导出桌面`, "warn");
-  }
-  try {
-    const path = await invoke<string>("export_feedback", { message });
-    toast(`已导出到桌面：${path}（把这个文件发给我即可）`);
-  } catch (e2) {
-    toast(`导出也失败了：${e2}。请用「复制」把内容贴给我`, "warn");
   }
 }
 
@@ -4006,9 +3617,6 @@ function toggleAudio(on: boolean) {
   void invoke("set_audio_enabled", { enabled: on });
   toast(on ? "耳朵竖起来啦～" : "暂时不想听音乐了");
 }
-
-// 注册小游戏（右键菜单「🎮 小游戏」入口）
-registerRiichiGame();
 
 void boot();
 
