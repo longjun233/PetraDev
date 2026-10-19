@@ -125,9 +125,10 @@ export class Live2DController implements PetView {
     m.scale.set(1, 1);
     const cw = (m as unknown as { width?: number }).width || 300;
     const ch = (m as unknown as { height?: number }).height || 300;
-    // 窗口/画布边长 = displayW（main 会同步 resize），模型显示 90%，留 5% 边距
-    const W = Math.max(120, this.displayW);
-    const H = W;
+    // 位置用「实际视口」，大小用 displayW：拖滑块时窗口还没同步 resize，
+    // 二者解耦才不会把模型画到窗口外。
+    const W = window.innerWidth || 700;
+    const H = window.innerHeight || 700;
     const target = Math.max(50, this.displayW);
     const s = Math.min((target * 0.9) / cw, (target * 0.9) / ch) * this.baseScale;
     m.scale.set(s, s);
@@ -153,9 +154,10 @@ export class Live2DController implements PetView {
     this.click = Math.max(0, this.click - dt * 6);
     this.modelOffsetX = d.modelOffsetX || 0;
     this.modelOffsetY = d.modelOffsetY || 0;
-    const W = Math.max(120, this.displayW);
-    // 窗口边长 = displayW，模型以窗口中心定位
-    m.position.set(W / 2 + this.modelOffsetX, W / 2 + this.modelOffsetY);
+    // 用实际视口居中（窗口 resize 与模型缩放不同步时也画在可见区域里）
+    const W = window.innerWidth || 700;
+    const H = window.innerHeight || 700;
+    m.position.set(W / 2 + this.modelOffsetX, H / 2 + this.modelOffsetY);
     if (Math.abs(d.vx) > 0.02) this.lastVx = d.vx;
     const wantMirror = this.lastVx < 0 ? -1 : 1;
     if (wantMirror !== this.mirror) {

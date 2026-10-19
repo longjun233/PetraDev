@@ -2931,18 +2931,36 @@ function toggleSizePanel() {
     slider.value = String(Math.round(settings.modelScale * 100));
     slider.className = "size-slider";
     let lastApply = 0;
+    // 拖动开始时的窗口位置/尺寸：松手后按"开始时的中心"对齐，避免缩放往左上/右下跑
+    let dragStart: { x: number; y: number; size: number } | null = null;
+    slider.addEventListener("pointerdown", () => {
+      const size = winSize;
+      void getCurrentWindow().outerPosition().then((p) => {
+        const sf = scaleFactor || 1;
+        dragStart = { x: p.x / sf, y: p.y / sf, size };
+      }).catch(() => { dragStart = null; });
+    });
     slider.addEventListener("input", () => {
       val.textContent = `${slider.value}%`;
       const now = performance.now();
-      if (now - lastApply < 60) return;
+      if (now - lastApply < 40) return;
       lastApply = now;
-      // 拖动过程中不改窗口位置：窗口一移动，面板跟着动，鼠标相对滑块的位置
-      // 就会跳，看起来就是"按键不固定 + 模型剧烈波动"。这里只改尺寸，松手后再居中。
-      void applyModelScale(Number(slider.value) / 100, false, false);
+      // 拖动中只改模型大小、不动窗口：窗口 resize 与画布 resize 不同步会高频闪烁，
+      // 窗口移动又会让面板跟着动、滑块值跳。松手时再一次性应用窗口尺寸。
+      view.setScale(Math.max(120, Math.round(WIN * (Number(slider.value) / 100))));
     });
     slider.addEventListener("change", () => {
-      // 松手：按中心对齐（窗口左上角反向移动一半），并记入当前模型
-      void applyModelScale(Number(slider.value) / 100, true, true);
+      const v = Number(slider.value) / 100;
+      const start = dragStart;
+      dragStart = null;
+      void (async () => {
+        await applyModelScale(v, true, false);
+        // 按拖动开始时的模型中心对齐（窗口左上角反向移动一半）
+        if (!start) return;
+        const targetX = start.x + (start.size - winSize) / 2;
+        const targetY = start.y + (start.size - winSize) / 2;
+        await getCurrentWindow().setPosition(new LogicalPosition(targetX, targetY)).catch(() => {});
+      })();
     });
     host.appendChild(slider);
   };
