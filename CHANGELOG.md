@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+- **精简（二次开发起点）**：按需求移除以下模块与入口 ——
+  - 语音：`src/tts/`、`src/asr/`、右键「🔊 语音输出 / 语音设置 / 测试语音 / 🎤 语音识别设置」、小助手输入框麦克风按钮，以及 Rust 侧 `tts_synthesize` / `set_tts_key` / `get_tts_key` / `asr_transcribe` / `set_asr_key` / `get_asr_key` / `asr_key_ready` / `get_mic_permission` / `set_mic_permission` 与 `settings.tts` / `settings.asr` 字段（`Cargo.toml` 同时移除 `lettre` / `hmac` / `sha2` / Linux `webkit2gtk`）。
+  - 小游戏：`src/games/`、右键「🎮 小游戏」子菜单、`public/mahjong/` 资源与 `scripts/riichi-*.mjs`。
+  - 抽卡：`src/features/card/`、右键「🎴 今日抽卡」、信息板抽卡入口、助手 `daily_card` 工具与抽卡点评。
+  - 反馈：右键「反馈」及反馈面板，Rust `send_feedback` / `export_feedback` / `feedback_text`（飞书推送与 SMTP 配置一并移除）。
+  - 官网：右键「官网」入口（`open_url` 保留给「检查更新」跳下载页）。
+  - 验证：`tsc` / `vite build` / `cargo check` 全绿；删减前完整代码留在 Git 基线提交 `f9662f4`，需要时 `git checkout f9662f4 -- <路径>` 即可取回。
+
 - 修「定时问候的时间又不准」（用户报障）：**根因是问候锚点只存在内存里** —— `lastGreetAt` 初值为 0，每次刷新页面 / 重启应用都会归零，`sinceGreet` 变成天文数字，于是一分钟后就补一次问候。
   - 证据（当天日记事件流，`petra-diary-events-*` 里的 greeting 记录）：设置的是 20 分钟，12:02→12:23 是正常的 **21 分钟**；之后变成 6分44 / 3分12 / **1分36** / 6分15 / **2分09** / **1分26** …，而那段时间正是我用 CDP 反复 `location.reload()` 做验证的窗口。单独复现：刷新后 **65 秒**必出一条问候（已量到）。
   - 修法：锚点**落盘**（`localStorage['petra-last-greet-at']`，统一走 `markGreeted()`），重启/刷新不再重置节奏；顺带删掉那条永远命不中的"早晨首次"分支（锚点持久化后 `lastGreetAt===0` 几乎不可能，而且它在用户**离开**时也会触发 —— 会冲着空房间问候）。早上的问候由"隔夜超过间隔"和"从离开回到活跃"两条覆盖，两处的 prompt 里都带当前时间。
