@@ -17,7 +17,7 @@ import { getVisibleRect } from "../ui/visible";
 import { deleteWrongHistory } from "./ChatHistory";
 import { toast } from "../ui/Toast";
 
-/** 输入条空闲多久自动收起（毫秒）。只认"真的在用"：点它、打字、用语音 */
+/** 输入条空闲多久自动收起（毫秒）。只认"真的在用"：点它、打字 */
 const IDLE_HIDE_MS = 20000;
 const HIST_KEY = "live2d-pet-assistant-history";
 const MEM_KEY = "live2d-pet-assistant-memory";
@@ -40,7 +40,7 @@ const INPUT_MAX_HEIGHT = 96;
 /**
  * 输入框随内容向下长高。
  *
- * 语音识别一次能吐一大段，单行框只能横向滚 —— 用户既看不全刚识别出来的字，
+ * 长句一次能吐一大段，单行框只能横向滚 —— 用户既看不全刚输入的内容，
  * 也没机会在发送前扫一眼。这里按 scrollHeight 长高，超过上限就内部滚动。
  */
 function autoGrowInput(): void {
@@ -96,7 +96,7 @@ export function clearApiKeyCache() {
   apiKeyCache = "";
 }
 
-/** 小助手是否正在对话中（麻将 AI 点评用：正忙就跳过，避免抢话） */
+/** 小助手是否正在对话中（外部定时任务用：正忙就跳过，避免抢话） */
 export function isAssistantBusy(): boolean {
   return busy;
 }
@@ -220,8 +220,8 @@ function ensureInput() {
 
   const row = document.createElement("div");
   row.className = "as-input-row";
-  // 用 textarea 而不是 input：语音识别可能说出一大段，单行框只能横向滚，
-  // 看着就是"识别出了什么我看不全"。textarea 会随内容向下长高（见 autoGrowInput）。
+  // 用 textarea 而不是 input：一次可能输入或粘贴一大段，单行框只能横向滚，
+  // 看着就是"输入了什么我看不全"。textarea 会随内容向下长高（见 autoGrowInput）。
   input = document.createElement("textarea");
   input.className = "as-input";
   input.rows = 1;
@@ -424,7 +424,7 @@ function ensureBubbles() {
 
 function resetTimer() {
   if (timer) clearTimeout(timer);
-  // 5 分钟没在用（没点输入条、没打字、没语音）就把输入条收起来
+  // 5 分钟没在用（没点输入条、没打字）就把输入条收起来
   timer = setTimeout(() => {
     timer = null;
     // 这里**不能**再看 busy 续命：桌宠流式回话、卡在工具循环里时 busy 可能长时间为真，
@@ -768,7 +768,7 @@ function makeStreamColorHook(el: HTMLElement): {
 function friendlyApiError(e: unknown): string {
   const raw = e instanceof Error ? e.message : String(e);
   if (/402|insufficient balance|余额不足|欠费/i.test(raw)) {
-    return "💸 API 余额不足（402）：请到「小助手设置」充值，或换一个可用的 API Key。\n（AI 暂时下线，但右键 →「🎮 小游戏」，桌宠还能陪你打麻将哦～）";
+    return "💸 API 余额不足（402）：请到「小助手设置」充值，或换一个可用的 API Key。";
   }
   if (/401|invalid_api_key|unauthorized|令牌|鉴权/i.test(raw)) {
     return "🔑 API Key 无效或已过期，请到「小助手设置」重新填写。";

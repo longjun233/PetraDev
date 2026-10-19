@@ -57,7 +57,7 @@ mac 版与 Windows 版的功能差异（其余功能一致）：
 
 | 功能 | macOS 状态 |
 |---|---|
-| PSD / Live2D 模型、待机、摸头、桌面漫游、小助手、日记、抽卡、整点播报 | ✅ 可用 |
+| PSD / Live2D 模型、待机、摸头、桌面漫游、小助手、日记、整点播报 | ✅ 可用 |
 | 打开软件 / 打开文件 / 锁屏 / 调音量 / 系统通知 | ✅ 可用（锁屏用系统自带的 CGSession，**不需要辅助功能权限**） |
 | 在线歌词 + 歌词气泡 | ✅ 可用（AppleScript 读 **Apple Music / Spotify** 的曲目与进度，歌词取自 LRCLIB） |
 | 歌词翻译 | ➖ 不提供（mac 侧数据源没有译文，菜单里不会出现这一项） |
@@ -206,7 +206,7 @@ src/                        # 前端（Vite + TypeScript + Pixi.js）
 
 src-tauri/                  # 后端（Tauri 2 + Rust）
 ├─ src/
-│  ├─ lib.rs                # 命令注册 / Shell 校验 / 反馈 / DPAPI
+│  ├─ lib.rs                # 命令注册 / Shell 校验 / DPAPI
 │  ├─ launch.rs             # 应用名解析与启动
 │  ├─ screen.rs             # 窗口 / 光标 / 工作区
 │  ├─ audio.rs              # WASAPI 回环捕获
@@ -222,8 +222,7 @@ public/models/              # 默认角色资源 + manifest.json
 
 - 前端报错与启动埋点汇集到 `%APPDATA%\com.wumiu.petra\logs\pet.log`，格式为 `[本地时间] [级别] 内容`（INFO / WARN / ERROR / DEBUG）
 - 高频埋点（拖动 / 交互 / 菜单开合 / 模型路径）在 dev 构建记录、release 默认不落盘；排查线上问题时可用环境变量 `PETRA_VERBOSE_LOG=1` 临时打开
-- 日志超过 1MB 会在启动时轮转为 `pet.log.1`（只留一份），反馈邮件里附带的日志上限 120k 字符（超长保留开头+结尾）
-- 反馈入口会自动附上本次启动的日志（`LOG_START_OFFSET` 之后的部分）
+- 日志超过 1MB 会在启动时轮转为 `pet.log.1`（只留一份）
 - dev 构建自带 WebView2 远程调试端口 9222，`node scripts/cdp-diag.mjs` 可抓取页面异常详情
 - 排查启动问题先看 `pet.log`：`=== pet started vX.Y.Z === → boot:start → boot:view=<类型> → boot:loop=start → boot:audio=on`
 

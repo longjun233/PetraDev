@@ -1140,8 +1140,7 @@ body {
   font-size: 15px;
 }
 
-.dp-close-btn,
-.cp-close-btn {
+.dp-close-btn {
   border: none;
   background: rgba(138, 122, 149, 0.12);
   color: #8a7a95;
@@ -1157,22 +1156,9 @@ body {
   flex-shrink: 0;
 }
 
-.dp-close-btn:hover,
-.cp-close-btn:hover {
+.dp-close-btn:hover {
   background: rgba(200, 80, 80, 0.2);
   color: #c94a4a;
-}
-
-/* 卡牌面板的关闭按钮定位在标题栏内 */
-.daily-card-panel {
-  position: relative;
-}
-
-.daily-card-panel .cp-close-btn {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 10;
 }
 
 /* 日记面板标题栏覆盖旧的 dp-title */
@@ -1180,119 +1166,6 @@ body {
   padding: 0;
   border-bottom: none;
   margin-bottom: 0;
-}
-.cp-rarity-border-SSR { border-left: 3px solid; border-image: linear-gradient(135deg, #ff6b6b, #feca57, #48dbfb, #ff9ff3) 1; }
-
-/* 锁定状态的卡牌 */
-.cp-coll-locked {
-  opacity: 0.5;
-  background: rgba(200, 200, 200, 0.3);
-}
-
-.cp-coll-unknown {
-  color: #aaa;
-  font-style: italic;
-}
-
-.cp-coll-rarity {
-  font-size: 10px;
-  font-weight: 600;
-  margin-top: 2px;
-}
-
-/* 筛选栏 */
-.cp-filter-bar {
-  display: flex;
-  gap: 4px;
-  margin: 8px 0;
-  flex-wrap: wrap;
-}
-
-.cp-filter-btn {
-  padding: 3px 10px;
-  border: 1px solid rgba(138, 122, 149, 0.3);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.6);
-  color: #5a4a65;
-  font-size: 11px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.cp-filter-btn:hover {
-  background: rgba(138, 122, 149, 0.15);
-}
-
-.cp-filter-btn.active {
-  background: rgba(138, 122, 149, 0.25);
-  border-color: rgba(138, 122, 149, 0.5);
-  font-weight: 600;
-}
-
-/* 卡牌详情弹窗 */
-.cp-detail-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.4);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  animation: fadeIn 0.2s ease;
-}
-
-.cp-detail {
-  position: relative;
-  width: 240px;
-  padding: 20px;
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.95);
-  backdrop-filter: blur(20px);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
-  text-align: center;
-  animation: slideUp 0.25s ease;
-}
-
-.cp-detail-art {
-  font-family: "Consolas", "Courier New", monospace;
-  font-size: 12px;
-  line-height: 1.2;
-  white-space: pre;
-  color: #3a2a45;
-  margin: 12px 0;
-  min-height: 60px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.cp-detail-theme {
-  font-size: 18px;
-  font-weight: 700;
-  color: #3a2a45;
-  margin: 8px 0 4px;
-}
-
-.cp-detail-rarity {
-  font-size: 12px;
-  font-weight: 600;
-  margin-bottom: 10px;
-}
-
-.cp-detail-text {
-  font-size: 13px;
-  color: #5a4a65;
-  line-height: 1.6;
-  margin: 10px 0;
-  padding: 10px;
-  background: rgba(138, 122, 149, 0.08);
-  border-radius: 8px;
-}
-
-.cp-detail-meta {
-  font-size: 11px;
-  color: #8a7a95;
-  margin-top: 8px;
 }
 
 /* 日记删除按钮 */
@@ -1304,16 +1177,6 @@ body {
 .dp-btn-danger:hover {
   background: rgba(231, 76, 60, 0.1);
   border-color: rgba(231, 76, 60, 0.4);
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-@keyframes slideUp {
-  from { transform: translateY(20px); opacity: 0; }
-  to { transform: translateY(0); opacity: 1; }
 }
 
 /* ========== 模型调节滑块 ========== */
