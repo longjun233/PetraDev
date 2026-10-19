@@ -1,0 +1,95 @@
+[package]
+name = "petra"
+version = "0.3.1"
+description = "Petra desktop pet"
+edition = "2021"
+[lib]
+name = "petra_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png", "protocol-asset"] }
+tauri-plugin-autostart = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-single-instance = "2"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+lettre = { version = "0.11", features = ["smtp-transport", "builder", "native-tls"] }
+raw-window-handle = "0.6"
+reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls", "blocking"] }
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+
+# macOS / Linux 共用依赖（版本与 Cargo.lock 里已有的对齐，不引入新的编译负担）：
+#   reqwest   —— 取在线歌词（LRCLIB，见 lib.rs 的 fetch_lyrics；mac 与 Linux 共用同一实现）。
+#                **用 native-tls 而不是 rustls**：
+#                rustls 会拉进 aws-lc-rs（要 cmake + 编译大量 C 代码），
+#                native-tls 在 macOS 上走系统 Security.framework，和本项目的 lettre 共用同一套；
+#                在 Linux 上它用系统 OpenSSL（构建机需要 libssl-dev + pkg-config，CI 已装），
+#                三边都不新增 Rust 侧需要 cmake 的 C 依赖。
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls"] }
+
+# macOS 专属依赖：
+#   objc2-*   —— NSWorkspace 读"前台是哪个软件"，公开 API、不需要辅助功能权限
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSRunningApplication"] }
+objc2-foundation = { version = "0.3", features = ["NSString"] }
+
+# Windows 专属：WASAPI 回环、SMTC 媒体会话、注册表代理、Win32 窗口操作、回收站、
+# UI Automation（关网页用的无障碍接口，见 src/webpage.rs）
+# Win32_Globalization：文件读写要在系统 ANSI 代码页（简中即 GBK）与 UTF-8 之间转换，
+# 见 src/files.rs —— 中文用户的老 .txt 多是 GBK，按 UTF-8 硬读就是乱码
+# （必须放在 cfgs 里，否则 macOS 上根本编不过）
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Foundation",
+    "Foundation_Collections",
+    "Media_Control",
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Graphics_Gdi",
+    "Win32_Media_Audio",
+    "Win32_Security_Cryptography",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Accessibility",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+# 屏幕截图（桌宠"识图"用，见 src/capture.rs）：Windows / macOS 走 xcap。
+#   ⚠️ **刻意排除 Linux** —— xcap 在 Linux 上要 libxcb / libxrandr / libpipewire /
+#   libdbus / libwayland / libegl / libclang 一批系统开发包，会破坏本项目
+#   "Linux 零新增系统库"的约定（见下方 Linux 段）。Linux 侧是 capture_linux.rs 的桩。
+#   image：xcap 本来就依赖它（0.25 + png feature）。这里显式声明**同一版本**，
+#   好让 capture.rs 能把 capture_image() 的返回值编码成 PNG —— 版本必须一致，
+#   否则 DynamicImage 与 xcap 返回的 RgbaImage 对不上。
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+xcap = "0.9"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# Linux 专属依赖（版本与 tao/tauri 已经依赖的 gtk 完全一致，Cargo.lock 里已有条目，
+# 不新增任何 crate，也不需要用户额外安装系统库 —— 能构建 Tauri Linux 版的机器
+# 本来就必须有 GTK3 开发包）：
+#   gtk 0.18 —— 只用来从 Tauri 窗口拿 GtkWindow → GdkWindow，进而调用
+#   gdk_window_input_shape_combine_region()。GDK 的 Wayland 后端会把它翻译成
+#   wl_surface.set_input_region，这是点击穿透的正路（见 wayland_linux.rs）。
+#   webkit2gtk 2.0 —— 语音输入要自己接住 WebKitGTK 的 permission-request 信号并
+#   放行麦克风（默认一律拒绝，不接 getUserMedia 必然失败），同时打开
+#   enable-media-stream。该 crate 本来就在依赖图里（wry 依赖它，且已开 v2_40），
+#   版本与 Cargo.lock 对齐，不新增任何要编译的 crate，也不新增系统库；
+#   v2_8 是 is_for_audio_device / is_for_video_device 这两个方法的最低下限。
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { version = "0.18", features = ["v3_24"] }
+webkit2gtk = { version = "2.0", features = ["v2_8"] }
+
+

@@ -1,0 +1,777 @@
+/**
+ * 双人立直麻将引擎（桌宠版房规）
+ * - 座位：玩家＝东家，桌宠＝南家；场风固定东
+ * - 无吃（二人局），碰/明杠/暗杠可用；立直需门清听牌且点数≥1000
+ * - 标准番符与庄闲倍率；双人房规由唯一对手支付整笔价值，立直棒归和牌者
+ * - 流局：听牌方收未听牌方 3000 点，立直棒留场
+ * - 无役不可和（宝牌不算役）；未实现振听/一发/里宝牌/赤牌/加杠/九种九牌等
+ */
+import {
+  buildWall,
+  countsOf,
+  doraFromIndicator,
+  isDragon,
+  isHonor,
+  sortTiles,
+  tileName,
+  WIND_E,
+  WIND_S,
+} from "./tiles";
+import {
+  canWin,
+  evaluateWin,
+  handPotential,
+  isTenpai,
+  isolationOf,
+  tenpaiWaits,
+  type Meld,
+  type WinResult,
+} from "./rules";
+
+export type Seat = 0 | 1;
+
+export interface RiverTile {
+  tile: number;
+  /** 立直宣言牌，牌河中横置。 */
+  riichi: boolean;
+  /** 已被对家鸣走；保留位置用于准确表现出牌顺序。 */
+  called: boolean;
+}
+
+export type GameEventType = "hand-start" | "draw" | "turn" | "discard" | "riichi" | "call" | "kan" | "win" | "draw-end";
+
+export interface GameEvent {
+  seq: number;
+  type: GameEventType;
+  seat?: Seat;
+  tile?: number;
+  call?: "pon" | "kan" | "ankan";
+}
+
+export interface PlayerState {
+  hand: number[];
+  melds: Meld[];
+  discards: number[];
+  river: RiverTile[];
+  riichi: boolean;
+  score: number;
+}
+
+export type ActionType = "discard" | "tsumo" | "ron" | "pon" | "kan" | "ankan" | "pass";
+
+export interface PlayerAction {
+  type: ActionType;
+  tile?: number;
+  riichi?: boolean;
+}
+
+export interface PendingState {
+  kind: "turn" | "call";
+  options: string[];
+  tile?: number;
+}
+
+export interface DiscardWaitPreview {
+  discard: number;
+  waits: number[];
+  ronWaits: number[];
+  tsumoWaits: number[];
+  unseen: Array<{ tile: number; count: number }>;
+  note: string;
+}
+
+export interface HandSettlement {
+  winner: Seat;
+  method: "自摸" | "荣和";
+  closed: number[];
+  melds: Meld[];
+  winningTile: number;
+  win: WinResult;
+  handPoints: number;
+  honba: number;
+  stickPoints: number;
+  totalGain: number;
+  payer: Seat;
+  before: [number, number];
+  after: [number, number];
+}
+
+export const SEAT_NAME = ["你", "桌宠"];
+
+export class RiichiGame {
+  players: [PlayerState, PlayerState];
+  wall: number[] = [];
+  /** 固定 14 张王牌区；0..3 为岭上牌，4/6/8/10/12 为宝牌指示位置。 */
+  deadWall: number[] = [];
+  doraIndicators: number[] = [];
+  sticks = 0;
+  handNo = 1;
+  phase: "playing" | "handend" | "ended" = "handend";
+  pending: PendingState | null = null;
+  log: string[] = [];
+  lastDiscard: { tile: number; from: Seat } | null = null;
+  lastDraw: number | null = null;
+  lastDrawSeat: Seat | null = null;
+  lastEvent: GameEvent | null = null;
+  riichiPending = false;
+  handResult: string | null = null;
+  lastSettlement: HandSettlement | null = null;
+  matchWinner: Seat | null = null;
+  lastHandWinner: Seat | null = null;
+  onUpdate: (() => void) | null = null;
+
+  private waiter: ((a: PlayerAction) => void) | null = null;
+  private runId = 0;
+  private disposed = false;
+  private eventSeq = 0;
+  private rinshanDraws = 0;
+  private drawFromDead = false;
+  private lastDrawWasRinshan = false;
+
+  constructor() {
+    this.players = [this.blankPlayer(), this.blankPlayer()];
+  }
+
+  private blankPlayer(): PlayerState {
+    return { hand: [], melds: [], discards: [], river: [], riichi: false, score: 25000 };
+  }
+
+  // ---------- 对外操作 ----------
+
+  newMatch() {
+    // 重开时先让旧对局的等待 Promise 退出；runId 使所有旧异步分支失效。
+    this.runId++;
+    this.resolveWaiter({ type: "pass" });
+    this.players = [this.blankPlayer(), this.blankPlayer()];
+    this.handNo = 1;
+    this.sticks = 0;
+    this.log = [];
+    this.matchWinner = null;
+    this.handResult = null;
+    this.startHand();
+  }
+
+  nextHand() {
+    if (this.phase !== "handend") return;
+    this.handNo++;
+    this.startHand();
+  }
+
+  dispose() {
+    this.disposed = true;
+    this.runId++;
+    this.phase = "ended";
+    this.resolveWaiter({ type: "pass" });
+  }
+
+  /** 玩家点击手牌 */
+  playTile(index: number) {
+    if (!this.pending || this.pending.kind !== "turn" || this.waiter === null) return;
+    if (this.disposed || this.phase !== "playing") return;
+    const me = this.players[0];
+    const tile = me.hand[index];
+    if (tile === undefined) return;
+    let riichi = this.riichiPending;
+    if (riichi) {
+      const rest = me.hand.filter((_, i) => i !== index);
+      if (!isTenpai(rest, me.melds.length, (t) => this.visibleCountFor(0, t) >= 4)) {
+        riichi = false;
+        this.log.push("这张牌打出去没有听牌，立直未成立");
+      }
+    }
+    this.resolveWaiter({ type: "discard", tile, riichi });
+  }
+
+  declareRiichi() {
+    if (!this.pending || !this.pending.options.includes("riichi")) return;
+    this.riichiPending = true;
+    this.log.push("你宣言立直，请选择要打出的牌");
+    this.update();
+  }
+
+  cancelRiichi() {
+    this.riichiPending = false;
+    this.update();
+  }
+
+  tsumo() {
+    if (!this.pending || !this.pending.options.includes("tsumo")) return;
+    this.resolveWaiter({ type: "tsumo" });
+  }
+
+  ankan(tile?: number) {
+    if (!this.pending || !this.pending.options.includes("ankan")) return;
+    const candidates = this.ankanCandidates(0);
+    const choice = tile ?? (candidates.length === 1 ? candidates[0] : undefined);
+    if (choice === undefined || !candidates.includes(choice)) return;
+    this.resolveWaiter({ type: "ankan", tile: choice });
+  }
+
+  call(type: ActionType) {
+    if (!this.pending || this.pending.kind !== "call") return;
+    if (!this.pending.options.includes(type)) return;
+    this.resolveWaiter({ type });
+  }
+
+  // ---------- 基础查询 ----------
+
+  private update() {
+    if (!this.disposed && this.onUpdate) this.onUpdate();
+  }
+
+  private note(type: GameEventType, seat?: Seat, tile?: number, call?: GameEvent["call"]) {
+    this.lastEvent = { seq: ++this.eventSeq, type, seat, tile, call };
+  }
+
+  private resolveWaiter(a: PlayerAction) {
+    const w = this.waiter;
+    this.waiter = null;
+    this.pending = null;
+    this.riichiPending = false;
+    if (w) w(a);
+  }
+
+  private request(actor: number, kind: "turn" | "call", options: string[], tile?: number): Promise<PlayerAction> {
+    this.pending = { kind, options, tile };
+    if (kind === "turn") this.note("turn", actor as Seat, this.lastDraw ?? undefined);
+    // 关键顺序：先挂上等待者再刷新 UI —— onUpdate 的回调可能同步应答（如自动打牌/过），
+    // 否则应答会被丢弃并造成死锁。
+    return new Promise<PlayerAction>((resolve) => {
+      this.waiter = resolve;
+      this.update();
+    });
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise<void>((resolve) => setTimeout(resolve, ms));
+  }
+
+  /** 某座位按规则可知的张数：自己的手牌 + 全部公开区域，绝不读取对手暗牌。 */
+  private visibleCountFor(viewer: Seat, t: number): number {
+    let n = 0;
+    for (const x of this.players[viewer].hand) if (x === t) n++;
+    for (const p of this.players) {
+      for (const m of p.melds) for (const x of m.tiles) if (x === t) n++;
+      for (const x of p.discards) if (x === t) n++;
+    }
+    for (const d of this.doraIndicators) if (d === t) n++;
+    return n;
+  }
+
+  /**
+   * 模拟打牌后的“未见张数”：自己的剩余手牌 + 模拟河牌 + 公开副露/未被鸣走河牌
+   * + 明示指示牌。被鸣牌已从 discards 移出，因此只会在副露中扣一次。
+   */
+  private unseenAfterDiscard(index: number, tile: number): number {
+    let seen = 0;
+    this.players[0].hand.forEach((known, handIndex) => {
+      if (handIndex !== index && known === tile) seen++;
+    });
+    if (this.players[0].hand[index] === tile) seen++; // 待打牌转入模拟牌河，仍是已知牌。
+    for (const player of this.players) {
+      for (const meld of player.melds) for (const known of meld.tiles) if (known === tile) seen++;
+      for (const known of player.discards) if (known === tile) seen++;
+    }
+    for (const indicator of this.doraIndicators) if (indicator === tile) seen++;
+    return Math.max(0, 4 - seen);
+  }
+
+  private seatWind(seat: Seat): number {
+    return seat === 0 ? WIND_E : WIND_S;
+  }
+
+  private doraSet(): Set<number> {
+    return new Set(this.doraIndicators.map(doraFromIndicator));
+  }
+
+  private evalWin(seat: Seat, closed: number[], winningTile: number, tsumo: boolean): WinResult | null {
+    const p = this.players[seat];
+    return evaluateWin({
+      closed,
+      melds: p.melds,
+      tsumo,
+      riichi: p.riichi,
+      seatWind: this.seatWind(seat),
+      roundWind: WIND_E,
+      doraIndicators: this.doraIndicators,
+      winningTile,
+      rinshan: tsumo && this.lastDrawWasRinshan,
+      haitei: tsumo && !this.lastDrawWasRinshan && this.wall.length === 0,
+      houtei: !tsumo && this.wall.length === 0,
+    });
+  }
+
+  private canAnkan(seat: Seat): boolean {
+    return this.ankanCandidates(seat).length > 0;
+  }
+
+  private bestRiichiDiscard(seat: Seat): number | null {
+    const p = this.players[seat];
+    if (p.melds.length > 0) return null;
+    if (p.hand.length !== 14) return null;
+    let best: number | null = null;
+    let bestWaits = 0;
+    const seen = new Set<number>();
+    for (let i = 0; i < p.hand.length; i++) {
+      const t = p.hand[i];
+      if (seen.has(t)) continue;
+      seen.add(t);
+      const rest = p.hand.filter((_, j) => j !== i);
+      const waits = tenpaiWaits(rest, 0, (x) => this.visibleCountFor(seat, x) >= 4);
+      if (waits.length > bestWaits) {
+        bestWaits = waits.length;
+        best = t;
+      }
+    }
+    return best;
+  }
+
+  private canRiichi(seat: Seat): boolean {
+    const p = this.players[seat];
+    if (p.riichi || p.melds.length > 0 || p.score < 1000) return false;
+    if (this.wall.length < 4) return false;
+    return this.bestRiichiDiscard(seat) !== null;
+  }
+
+  private isTenpaiSeat(seat: Seat): boolean {
+    const p = this.players[seat];
+    return isTenpai(p.hand, p.melds.length, (t) => this.visibleCountFor(seat, t) >= 4);
+  }
+
+  /** 听牌提示（UI 显示"听：xx"） */
+  waitsHint(seat: Seat): number[] {
+    const p = this.players[seat];
+    return tenpaiWaits(p.hand, p.melds.length, (t) => this.visibleCountFor(seat, t) >= 4);
+  }
+
+  /** 玩家本局是否已立直（UI 高亮用） */
+  isRiichi(seat: Seat): boolean {
+    return this.players[seat].riichi;
+  }
+
+  /** 当前可选择的暗杠牌种；多候选时由界面明确让玩家选择。 */
+  ankanCandidates(seat: Seat = 0): number[] {
+    const p = this.players[seat];
+    if (p.riichi || p.hand.length !== 14 - 3 * p.melds.length) return [];
+    const counts = countsOf(p.hand);
+    return counts.flatMap((count, tile) => count === 4 ? [tile] : []);
+  }
+
+  /**
+   * 仅用玩家手牌与公开信息计算打出指定牌后的听牌结果。
+   * 和牌可用性继续交给 evaluateWin，避免 UI 维护第二套规则。
+   */
+  discardWaitPreview(index: number): DiscardWaitPreview | null {
+    if (this.phase !== "playing" || this.pending?.kind !== "turn") return null;
+    const p = this.players[0];
+    const discard = p.hand[index];
+    if (discard === undefined) return null;
+    const rest = p.hand.filter((_, i) => i !== index);
+    // 牌形听牌与未见张数分开：余0仍是牌形听牌，必须保留并置灰。
+    const waits = tenpaiWaits(rest, p.melds.length, () => false);
+    if (waits.length === 0) return null;
+    const riichiAfterDiscard = p.riichi || this.riichiPending;
+    const ronWaits: number[] = [];
+    const tsumoWaits: number[] = [];
+    for (const tile of waits) {
+      const closed = sortTiles([...rest, tile]);
+      const base = {
+        closed,
+        melds: p.melds,
+        riichi: riichiAfterDiscard,
+        seatWind: this.seatWind(0),
+        roundWind: WIND_E,
+        doraIndicators: this.doraIndicators,
+        winningTile: tile,
+      };
+      if (evaluateWin({ ...base, tsumo: false })) ronWaits.push(tile);
+      if (evaluateWin({ ...base, tsumo: true })) tsumoWaits.push(tile);
+    }
+    let note = "按当前房规，所示牌均可荣和";
+    if (ronWaits.length === 0 && tsumoWaits.length > 0) note = "当前无荣和役，仅自摸时成立";
+    else if (ronWaits.length === 0) note = "牌形听牌，但当前无役，不能和牌";
+    else if (ronWaits.length < waits.length) note = "部分待牌当前无役，荣和受限";
+    const unseen = waits.map((tile) => ({ tile, count: this.unseenAfterDiscard(index, tile) }));
+    return { discard, waits, ronWaits, tsumoWaits, unseen, note };
+  }
+
+  // ---------- 对局流程 ----------
+
+  private startHand() {
+    this.phase = "playing";
+    this.handResult = null;
+    this.lastSettlement = null;
+    this.pending = null;
+    this.waiter = null;
+    this.riichiPending = false;
+    this.deal();
+    this.log.push("第 " + this.handNo + " 局开始（你＝东家，桌宠＝南家）");
+    this.note("hand-start");
+    this.update();
+    const id = ++this.runId;
+    void this.runLoop(id);
+  }
+
+  private deal() {
+    const shuffled = buildWall();
+    this.deadWall = shuffled.splice(shuffled.length - 14, 14);
+    this.wall = shuffled;
+    this.rinshanDraws = 0;
+    this.drawFromDead = false;
+    this.lastDrawWasRinshan = false;
+    this.doraIndicators = [this.deadWall[4]];
+    for (const p of this.players) {
+      p.hand = [];
+      p.melds = [];
+      p.discards = [];
+      p.river = [];
+      p.riichi = false;
+    }
+    for (let i = 0; i < 13; i++) {
+      for (const seat of [0, 1] as Seat[]) {
+        p_pushHand(this.players[seat], this.wall.shift() as number);
+      }
+    }
+    for (const p of this.players) p.hand = sortTiles(p.hand);
+    this.lastDiscard = null;
+    this.lastDraw = null;
+    this.lastDrawSeat = null;
+  }
+
+  private async runLoop(id: number) {
+    let current: Seat = 0;
+    let needDraw = true;
+    for (;;) {
+      if (this.disposed || this.phase !== "playing" || id !== this.runId) return;
+
+      if (needDraw) {
+        if (this.wall.length === 0) {
+          this.finishDraw();
+          return;
+        }
+        let tile: number;
+        let rinshan = false;
+        if (this.drawFromDead && this.rinshanDraws < 4) {
+          const slot = this.rinshanDraws++;
+          tile = this.deadWall[slot] as number;
+          // 岭上摸牌后把活牌墙最后一张补入同一王牌槽：王牌区始终正好 14 张，
+          // 被摸走的实体牌不会同时残留在 deadWall 与手牌中。
+          const replacement = this.wall.pop();
+          if (replacement !== undefined) this.deadWall[slot] = replacement;
+          this.drawFromDead = false;
+          rinshan = true;
+        } else {
+          tile = this.wall.shift() as number;
+        }
+        this.lastDrawWasRinshan = rinshan;
+        p_pushHand(this.players[current], tile);
+        this.players[current].hand = sortTiles(this.players[current].hand);
+        this.lastDraw = tile;
+        this.lastDrawSeat = current;
+        this.note("draw", current, tile);
+        this.update();
+      }
+
+      let action: PlayerAction;
+      if (current === 0) {
+        const options = this.turnOptions(0, needDraw);
+        action = await this.request(0, "turn", options);
+        if (this.disposed || id !== this.runId) return;
+      } else {
+        await this.delay(needDraw ? 650 : 450);
+        if (this.disposed || id !== this.runId) return;
+        action = this.petDecide(1, needDraw);
+      }
+
+      if (action.type === "tsumo") {
+        const win = this.evalWin(current, [...this.players[current].hand], this.lastDraw as number, true);
+        if (win) {
+          this.finishWin(current, win, true);
+          return;
+        }
+        continue;
+      }
+
+      if (action.type === "ankan") {
+        this.applyAnkan(current, action.tile);
+        this.drawFromDead = true;
+        needDraw = true;
+        continue;
+      }
+
+      // 打牌
+      const tile = action.tile !== undefined ? action.tile : this.players[current].hand[0];
+      this.applyDiscard(current, tile, action.riichi === true);
+      this.update();
+      await this.delay(280);
+      if (this.disposed || id !== this.runId) return;
+
+      const other: Seat = current === 0 ? 1 : 0;
+      const resp = await this.requestCall(other, tile);
+      if (resp.type === "ron") {
+        const win = this.evalWin(other, sortTiles([...this.players[other].hand, tile]), tile, false);
+        if (win) {
+          this.finishWin(other, win, false);
+          return;
+        }
+      } else if (resp.type === "pon" || resp.type === "kan") {
+        this.applyCall(other, resp.type, tile);
+        current = other;
+        needDraw = resp.type === "kan";
+        this.drawFromDead = resp.type === "kan";
+        this.update();
+        continue;
+      }
+
+      current = other;
+      needDraw = true;
+    }
+  }
+
+  private turnOptions(seat: Seat, needDraw: boolean): string[] {
+    const p = this.players[seat];
+    const options: string[] = ["discard"];
+    if (!needDraw) return options;
+    const win = this.evalWin(seat, [...p.hand], this.lastDraw as number, true);
+    if (win) options.push("tsumo");
+    if (this.canRiichi(seat)) options.push("riichi");
+    if (this.canAnkan(seat)) options.push("ankan");
+    return options;
+  }
+
+  private requestCall(seat: Seat, tile: number): Promise<PlayerAction> {
+    const p = this.players[seat];
+    const options: string[] = ["pass"];
+    const counts = countsOf(p.hand);
+    if (this.evalWin(seat, sortTiles([...p.hand, tile]), tile, false)) options.push("ron");
+    if (!p.riichi && this.wall.length > 0) {
+      if (counts[tile] >= 2) options.push("pon");
+      if (counts[tile] >= 3) options.push("kan");
+    }
+    if (seat === 0) {
+      if (options.length === 1) return Promise.resolve({ type: "pass" });
+      return this.request(0, "call", options, tile);
+    }
+    if (this.disposed) return Promise.resolve({ type: "pass" });
+    return Promise.resolve(this.petCall(1, tile, options));
+  }
+
+  private applyDiscard(seat: Seat, tile: number, riichi: boolean) {
+    const p = this.players[seat];
+    const idx = p.hand.indexOf(tile);
+    if (idx < 0) return;
+    p.hand.splice(idx, 1);
+    p.discards.push(tile);
+    const establishedRiichi = riichi && !p.riichi && p.melds.length === 0 && p.score >= 1000;
+    p.river.push({ tile, riichi: establishedRiichi, called: false });
+    this.lastDiscard = { tile, from: seat };
+    this.lastDrawSeat = null;
+    if (establishedRiichi) {
+      p.riichi = true;
+      p.score -= 1000;
+      this.sticks += 1;
+      this.log.push(SEAT_NAME[seat] + " 宣言立直（" + tileName(tile) + "）");
+      this.note("riichi", seat, tile);
+    } else {
+      this.log.push(SEAT_NAME[seat] + " 打出 " + tileName(tile));
+      this.note("discard", seat, tile);
+    }
+  }
+
+  private applyCall(seat: Seat, type: "pon" | "kan", tile: number) {
+    const p = this.players[seat];
+    const need = type === "pon" ? 2 : 3;
+    for (let i = 0; i < need; i++) {
+      const idx = p.hand.indexOf(tile);
+      if (idx >= 0) p.hand.splice(idx, 1);
+    }
+    p.melds.push({
+      kind: type === "pon" ? "triplet" : "kan",
+      tiles: type === "pon" ? [tile, tile, tile] : [tile, tile, tile, tile],
+      open: true,
+      from: seat === 0 ? 1 : 0,
+    });
+    const from = seat === 0 ? 1 : 0;
+    this.players[from].discards.pop();
+    for (let i = this.players[from].river.length - 1; i >= 0; i--) {
+      if (!this.players[from].river[i].called) {
+        this.players[from].river[i].called = true;
+        break;
+      }
+    }
+    this.lastDiscard = null;
+    this.log.push(SEAT_NAME[seat] + (type === "pon" ? " 碰 " : " 明杠 ") + tileName(tile));
+    this.note("call", seat, tile, type);
+    if (type === "kan") this.flipKanDora();
+  }
+
+  private applyAnkan(seat: Seat, requested?: number) {
+    const candidates = this.ankanCandidates(seat);
+    const tile = requested !== undefined && candidates.includes(requested) ? requested : candidates[0] ?? null;
+    if (tile === null) return;
+    const p = this.players[seat];
+    for (let i = 0; i < 4; i++) {
+      const idx = p.hand.indexOf(tile);
+      if (idx >= 0) p.hand.splice(idx, 1);
+    }
+    p.melds.push({ kind: "kan", tiles: [tile, tile, tile, tile], open: false, from: null });
+    this.log.push(SEAT_NAME[seat] + " 暗杠 " + tileName(tile));
+    this.note("kan", seat, tile, "ankan");
+    this.flipKanDora();
+    this.update();
+  }
+
+  private flipKanDora() {
+    if (this.doraIndicators.length >= 5) return;
+    const ind = this.deadWall[4 + this.doraIndicators.length * 2];
+    if (ind === undefined) return;
+    this.doraIndicators.push(ind);
+    this.log.push("新宝牌指示牌：" + tileName(ind));
+  }
+
+  // ---------- 桌宠 AI ----------
+
+  private petDecide(seat: Seat, needDraw: boolean): PlayerAction {
+    const p = this.players[seat];
+    if (needDraw) {
+      const win = this.evalWin(seat, [...p.hand], this.lastDraw as number, true);
+      if (win) return { type: "tsumo" };
+      if (this.canAnkan(seat) && Math.random() < 0.85) return { type: "ankan", tile: this.ankanCandidates(seat)[0] };
+      if (this.canRiichi(seat)) {
+        const choice = this.bestRiichiDiscard(seat);
+        if (choice !== null && Math.random() < 0.9) return { type: "discard", tile: choice, riichi: true };
+      }
+    }
+    return { type: "discard", tile: this.petPickDiscard(seat) };
+  }
+
+  private petPickDiscard(seat: Seat): number {
+    const p = this.players[seat];
+    const counts = countsOf(p.hand);
+    const dora = this.doraSet();
+    const seen = new Set<number>();
+    let best = p.hand[0];
+    let bestScore = -Infinity;
+    for (let i = 0; i < p.hand.length; i++) {
+      const t = p.hand[i];
+      if (seen.has(t)) continue;
+      seen.add(t);
+      const rest = p.hand.filter((_, j) => j !== i);
+      const tenpaiNow = isTenpai(rest, p.melds.length, (x) => this.visibleCountFor(seat, x) >= 4);
+      if (p.riichi && !tenpaiNow) continue;
+      let score = handPotential(rest) * 10 + isolationOf(t, counts) * 0.8;
+      if (dora.has(t)) score -= 5;
+      if (isHonor(t) && counts[t] >= 2) score += 3;
+      if (tenpaiNow) score += 6;
+      if (score > bestScore) {
+        bestScore = score;
+        best = t;
+      }
+    }
+    return best;
+  }
+
+  private petCall(seat: Seat, tile: number, options: string[]): PlayerAction {
+    if (options.includes("ron")) return { type: "ron" };
+    const p = this.players[seat];
+    const counts = countsOf(p.hand);
+    const dora = this.doraSet();
+    const isYakuhai = isDragon(tile) || tile === this.seatWind(seat) || tile === WIND_E;
+    if (options.includes("kan") && counts[tile] >= 3 && (isYakuhai || dora.has(tile)) && Math.random() < 0.7) {
+      return { type: "kan" };
+    }
+    if (options.includes("pon") && counts[tile] >= 2) {
+      if (isYakuhai && Math.random() < 0.85) return { type: "pon" };
+      if (dora.has(tile) && Math.random() < 0.5) return { type: "pon" };
+      if (!p.riichi && p.melds.length > 0 && Math.random() < 0.25) return { type: "pon" };
+    }
+    return { type: "pass" };
+  }
+
+  // ---------- 结算 ----------
+
+  private finishWin(winner: Seat, win: WinResult, tsumo: boolean) {
+    this.lastHandWinner = winner;
+    const loser: Seat = winner === 0 ? 1 : 0;
+    const pts = win.points;
+    const before: [number, number] = [this.players[0].score, this.players[1].score];
+    const stickGet = this.sticks * 1000;
+    const winningTile = tsumo ? this.lastDraw as number : this.lastDiscard?.tile as number;
+    const closed = tsumo
+      ? [...this.players[winner].hand]
+      : sortTiles([...this.players[winner].hand, winningTile]);
+    this.players[loser].score -= pts;
+    this.players[winner].score += pts + stickGet;
+    this.sticks = 0;
+    const detail = win.yaku.map((y) => y.yakuman ? `${y.name}役满` : y.name + y.han + "番").join("、") +
+      (win.doraCount > 0 ? "、宝牌" + win.doraCount : "");
+    const grade = win.limitName ?? (win.yakuman > 0 ? "役满" : `${win.han}番${win.fu}符`);
+    this.lastSettlement = {
+      winner,
+      method: tsumo ? "自摸" : "荣和",
+      closed,
+      melds: this.players[winner].melds.map((meld) => ({ ...meld, tiles: [...meld.tiles] })),
+      winningTile,
+      win,
+      handPoints: pts,
+      honba: 0,
+      stickPoints: stickGet,
+      totalGain: pts + stickGet,
+      payer: loser,
+      before,
+      after: [this.players[0].score, this.players[1].score],
+    };
+    this.log.push(
+      SEAT_NAME[winner] + (tsumo ? " 自摸" : " 荣和") + "：" + detail +
+      "，" + grade + " " + pts + " 点" + (stickGet > 0 ? "（另收供托 " + stickGet + "）" : ""),
+    );
+    this.handResult =
+      (winner === 0 ? "🎉 你和了！" : "😿 桌宠和了") +
+      "\n" + detail + " ｜ " + grade + " ｜ " + pts + " 点" +
+      "\n" + (tsumo ? "自摸（双人房规）" : "荣和") + "，由" + SEAT_NAME[loser] + "全额支付";
+    this.note("win", winner);
+    this.endHand();
+  }
+
+  private finishDraw() {
+    this.lastHandWinner = null;
+    const t0 = this.isTenpaiSeat(0);
+    const t1 = this.isTenpaiSeat(1);
+    let msg = "牌墙摸完，流局";
+    if (t0 && !t1) {
+      this.players[0].score += 3000;
+      this.players[1].score -= 3000;
+      msg += "：你听牌，桌宠支付 3000 点";
+    } else if (t1 && !t0) {
+      this.players[1].score += 3000;
+      this.players[0].score -= 3000;
+      msg += "：桌宠听牌，你支付 3000 点";
+    } else if (t0 && t1) {
+      msg += "：双方听牌，无点数变动";
+    } else {
+      msg += "：双方均未听牌";
+    }
+    this.log.push(msg);
+    this.handResult = "🀫 " + msg + "\n立直棒留在桌上";
+    this.note("draw-end");
+    this.endHand();
+  }
+
+  private endHand() {
+    this.phase = "handend";
+    this.pending = null;
+    const [a, b] = this.players;
+    if (a.score <= 0 || b.score <= 0) {
+      this.phase = "ended";
+      this.matchWinner = a.score >= b.score ? 0 : 1;
+      this.handResult += "\n\n🏁 对局结束：" + (this.matchWinner === 0 ? "你赢了！" : "桌宠赢了") +
+        "（" + a.score + " : " + b.score + "）";
+    }
+    this.update();
+  }
+}
+
+/** 手牌插入并保持有序 */
+function p_pushHand(p: PlayerState, tile: number) {
+  p.hand.push(tile);
+}
