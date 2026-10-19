@@ -47,6 +47,8 @@ export interface Settings {
   mouseTrack: boolean;
   idleMode: boolean;
   modelScale: number;
+  /** 重启时是否恢复上次的大小与位置；关掉则每次启动都用默认（100% + 屏内位置） */
+  rememberPetState: boolean;
   /** 每个模型单独记录的大小（key = 模型名，用户调整过才记录） */
   modelScales: Record<string, number>;
   /** 天气城市名（中文），空则用 API 返回的英文名 */
@@ -97,6 +99,7 @@ const DEFAULTS: Settings = {
   mouseTrack: false,
   idleMode: false,
   modelScale: 1,
+  rememberPetState: true,
   modelScales: {},
   weatherCity: "",
   weatherBubble: true,

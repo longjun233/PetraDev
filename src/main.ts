@@ -537,7 +537,7 @@ function positionPanelNearModel(panel: HTMLElement) {
     // 之前它用 width:auto + max-width，窗口一小滑块就被压成一条线（看起来"变形"）。
     const vr = getWindowVisibleRect();
     const margin = 10;
-    const pw = 260;
+    const pw = 180;
     const ph = panel.offsetHeight || 96;
     panel.style.position = "fixed";
     panel.style.transform = "none";
@@ -995,8 +995,9 @@ async function boot() {
     requestInteractionRegionSync(true);
   });
   window.addEventListener("resize", () => requestInteractionRegionSync(true));
-  // 恢复上次保存的位置（优先），否则用系统报告的当前位置
-  const savedPos = loadPetPosition();
+  // 恢复上次保存的位置（优先），否则用系统报告的当前位置。
+  // 「重启记住大小与位置」关掉时一律用默认（100% + 屏内位置），保证初始化不会显示不全。
+  const savedPos = settings.rememberPetState ? loadPetPosition() : null;
   let pos = await currentLogicalPos(win);
   if (savedPos) {
     pos = savedPos;
@@ -1008,7 +1009,7 @@ async function boot() {
   engine.setActivityLevel(settings.activity);
   engine.setTracking(settings.mouseTrack);
   // 应用持久化模型缩放（窗口尺寸 + canvas + 引擎窗口边长）
-  void applyModelScale(settings.modelScale);
+  void applyModelScale(settings.rememberPetState ? settings.modelScale : 1);
   if (import.meta.env.DEV) {
     // 红框是纯调试用的（窗口边界），只在 dev 建；
     // 绿框（角色边界）是「调整模型边界」面板要用的，改成按需创建，见 ensureModelBoundsEl。
@@ -1206,27 +1207,12 @@ async function boot() {
     if (drag.mode === "idleSlide") {
       // 待机滑动：原生拖动 8ms 线程直接跟随（locked_y 锁定边缘），无需前端设位置
     } else {
-      let nx = Math.round(drag.wx + dx);
-      let ny = Math.round(drag.wy + dy);
-      // 先设位置，再算 offset，再约束（同一帧内完成，不留时序差）
+      const nx = Math.round(drag.wx + dx);
+      const ny = Math.round(drag.wy + dy);
       engine.setPos(nx, ny);
-      const cb = view.getCharacterBounds?.() ?? null;
-      engine.syncModelOffset(cb ?? undefined);
-      engine.constrainPosition();
-      // 实时发送模型边界（含 offset）给 Rust drag_follow，8ms 原生夹紧
-      {
-        const ox = engine.rawOffset.x;
-        const oy = engine.rawOffset.y;
-        const fallback = { left: 200, top: 200, right: 500, bottom: 500 };
-        const b = cb ?? fallback;
-        const s = scaleFactor || 1;
-        void invoke("set_model_bounds", {
-          left: Math.round((ox + b.left) * s),
-          top: Math.round((oy + b.top) * s),
-          right: Math.round((ox + b.right) * s),
-          bottom: Math.round((oy + b.bottom) * s),
-        });
-      }
+      // 自由拖动：允许把模型拖到屏幕外（上身/下身显示不全由用户自己控制）。
+      // 给 Rust drag_follow 传 0 边界 = 不做"模型不出屏"夹紧，窗口完全跟随鼠标。
+      void invoke("set_model_bounds", { left: 0, top: 0, right: 0, bottom: 0 });
     }
   });
   const endDrag = (cancelled = false) => {
@@ -1396,20 +1382,9 @@ function showAnnouncement(title: string, lines: string[], version: string) {
     const cb = view.getCharacterBounds?.() ?? null;
     engine.syncModelOffset(cb ?? undefined);
     engine.update(now, dt);
-    // 仅拖拽期间同步给 Rust drag follower；穿透判定使用独立 regions。
+    // 仅拖拽期间同步给 Rust drag follower：传 0 边界表示自由拖动（可拖出屏幕）。
     if (drag?.moved && drag.mode !== "idleSlide") {
-      const ox = engine.rawOffset.x;
-      const oy = engine.rawOffset.y;
-      // 有 characterBounds → 精确边界；无 → 窗口中心 300x300 作为 fallback
-      const fallback = { left: 200, top: 200, right: 500, bottom: 500 };
-      const b = cb ?? fallback;
-      const s = scaleFactor || 1;
-      void invoke("set_model_bounds", {
-        left: Math.round((ox + b.left) * s),
-        top: Math.round((oy + b.top) * s),
-        right: Math.round((ox + b.right) * s),
-        bottom: Math.round((oy + b.bottom) * s),
-      });
+      void invoke("set_model_bounds", { left: 0, top: 0, right: 0, bottom: 0 });
     }
     // 拖拽看门狗：原生跟随期间光标离开窗口（屏边夹紧 / 待机锁 y 拖出）后 WebView
     // 收不到 pointerup，拖拽状态会永久卡死。连续检测到光标出窗约 100ms 即强制结束。
@@ -2022,6 +1997,20 @@ function buildMenu(engine: BehaviorEngine) {
           id: "size",
           label: "模型大小",
           onPick: () => void toggleSizePanel(),
+        },
+        {
+          id: "remember-state",
+          label: "重启记住大小与位置",
+          state: settings.rememberPetState ? "开" : "关",
+          onPick: () => {
+            settings.rememberPetState = !settings.rememberPetState;
+            saveSettings(settings);
+            toast(
+              settings.rememberPetState
+                ? "下次启动会恢复这次的大小与位置"
+                : "下次启动会回到默认大小和屏幕内位置",
+            );
+          },
         },
         {
           id: "bounds",
@@ -2902,7 +2891,7 @@ function toggleSizePanel() {
       const dy = e.clientY - rect.top;
       const onMove = (ev: PointerEvent) => {
         const vr = getWindowVisibleRect();
-        const w = host.offsetWidth || 260;
+        const w = host.offsetWidth || 180;
         const h = host.offsetHeight || 96;
         const left = Math.max(vr.left, Math.min(ev.clientX - dx, Math.max(vr.left, vr.right - w)));
         const top = Math.max(vr.top, Math.min(ev.clientY - dy, Math.max(vr.top, vr.bottom - h)));

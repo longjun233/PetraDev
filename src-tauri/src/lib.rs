@@ -893,7 +893,13 @@ fn spawn_drag_follower(app: AppHandle) {
         let locked = *drag.locked_y.lock().unwrap();
         let bounds = *drag.model_bounds.lock().unwrap();
         let scale = get_window_scale_factor(&app);
-        screen::drag_follow(&win, off.0, off.1, locked, Some(bounds), scale);
+        // 前端传 (0,0,0,0) = 自由拖动：允许把模型拖出屏幕（上身/下身显示不全由用户控制）
+        let mb = if bounds.2 > bounds.0 && bounds.3 > bounds.1 {
+            Some(bounds)
+        } else {
+            None
+        };
+        screen::drag_follow(&win, off.0, off.1, locked, mb, scale);
     });
 }
 

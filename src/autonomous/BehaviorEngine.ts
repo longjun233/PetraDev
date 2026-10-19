@@ -589,24 +589,18 @@ export class BehaviorEngine {
   constrainPosition() {
     if (!this.area) return;
     const a = this.area;
-    const b = this.charBoundsCache;
-    if (!b) return;
-    const sox = this.rawOffset.x;
-    const soy = this.rawOffset.y;
-    // 左/上边界给正向偏移（窗口能多探出去，补偿角色在窗口内偏左上）
-    const loX = a.left - sox - b.left;
-    const hiX = a.left + a.width - sox - b.right;
-    const loY = a.top - soy - b.top;
-    const hiY = a.top + a.height - soy - b.bottom;
-    // 模型比窗口大时 lo > hi，夹紧没有意义（会把窗口推到反向边界）
-    if (loX <= hiX) {
-      if (this.pos.x < loX) { this.pos.x = loX; this.vel.x *= -BOUNCE_DAMP; }
-      if (this.pos.x > hiX) { this.pos.x = hiX; this.vel.x *= -BOUNCE_DAMP; }
-    }
-    if (loY <= hiY) {
-      if (this.pos.y < loY) { this.pos.y = loY; this.vel.y *= -BOUNCE_DAMP; }
-      if (this.pos.y > hiY) { this.pos.y = hiY; this.vel.y *= -BOUNCE_DAMP; }
-    }
+    if (!this.charBoundsCache) return;
+    // 允许模型出屏：只保证窗口中心还在工作区内。
+    // 原先按模型包围盒夹紧，用户「把放大后的模型往下挪一点」会被硬边界顶死，
+    // 现在上身/下身出屏交给用户拖拽自己控制。
+    const loX = a.left - this.win * 0.5;
+    const hiX = a.left + a.width - this.win * 0.5;
+    const loY = a.top - this.win * 0.5;
+    const hiY = a.top + a.height - this.win * 0.5;
+    if (this.pos.x < loX) { this.pos.x = loX; this.vel.x *= -BOUNCE_DAMP; }
+    if (this.pos.x > hiX) { this.pos.x = hiX; this.vel.x *= -BOUNCE_DAMP; }
+    if (this.pos.y < loY) { this.pos.y = loY; this.vel.y *= -BOUNCE_DAMP; }
+    if (this.pos.y > hiY) { this.pos.y = hiY; this.vel.y *= -BOUNCE_DAMP; }
   }
 
   /** 窗口边长（模型缩放时跟随更新） */
