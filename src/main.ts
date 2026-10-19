@@ -290,7 +290,14 @@ function attachView(v: PetView) {
  * 这样放大到 200% 时窗口跟着变大，不会把模型裁掉。
  */
 async function setModelDisplaySize(size: number) {
-  const s = Math.max(120, Math.round(size));
+  // 窗口最大不超过工作区：200% 时窗口会到 1400，而 1080p 屏幕放不下，
+  // 模型下半截会被屏幕/任务栏裁掉。限制后模型始终完整可见。
+  const a = engine.workArea;
+  const maxDim = Math.min(
+    a ? a.width : (window.screen.availWidth || 1920),
+    a ? a.height : (window.screen.availHeight || 1080),
+  ) - 8;
+  const s = Math.max(120, Math.min(Math.round(size), Math.max(320, maxDim)));
   winSize = s;
   engine.setWindowSize(s);
   view.setScale(s);
@@ -526,6 +533,18 @@ function positionFloatingUi(
 /** 将面板定位到模型旁边：往屏幕内侧（空间大的方向），不挡住模型、不出屏 */
 function positionPanelNearModel(panel: HTMLElement) {
   panel.style.position = "fixed"; // 确保 fixed 定位
+  // 「模型大小」面板固定在窗口顶部：拖动滑块会实时改变窗口尺寸，
+  // 如果跟着模型每帧重算，面板会在大小/位置之间来回跳，窗口一小就被挤出可见区（看起来像消失）。
+  if (panel.id === "size-panel") {
+    const vr = getWindowVisibleRect();
+    const margin = 10;
+    panel.style.maxWidth = `${Math.max(120, vr.right - vr.left - margin * 2)}px`;
+    const pw = Math.min(panel.offsetWidth || 260, Math.max(120, vr.right - vr.left - margin * 2));
+    panel.style.left = `${Math.round(vr.left + Math.max(margin, (vr.right - vr.left - pw) / 2))}px`;
+    panel.style.top = `${Math.round(vr.top + margin)}px`;
+    panel.style.bottom = "auto";
+    return;
+  }
   const mr = getModelRect();
   const vr = getWindowVisibleRect();
   // 可见区尺寸下限保护（贴边/几乎出屏时不出现负值或 0）
