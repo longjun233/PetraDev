@@ -48,7 +48,6 @@ export const TOOL_SPECS: Record<string, ToolSpec> = {
   get_idle_seconds: { readOnly: true },
   send_notification: { required: ["title"] },
   lock_screen: {},
-  daily_card: { maxResultChars: 900 },
   view_diary: { maxResultChars: 3000, readOnly: true },
 };
 

@@ -41,20 +41,8 @@ export interface DiarySettings {
   autoGenerate: boolean;
 }
 
-export interface DailyCardSettings {
-  enabled: boolean;
-}
-
 export interface Settings {
   audioEnabled: boolean;
-  /** 麻将等小游戏的事件音效；与跟随音乐、动画和桌宠互动相互独立。 */
-  gameSound: boolean;
-  /** 游戏音效音量，范围 0～1。 */
-  gameSoundVolume: number;
-  /** 麻将对局与结算音乐开关。 */
-  gameMusic: boolean;
-  /** 麻将音乐音量，范围 0～1。 */
-  gameMusicVolume: number;
   activity: ActivityLevel;
   mouseTrack: boolean;
   idleMode: boolean;
@@ -79,7 +67,6 @@ export interface Settings {
   fileDenyPaths: string[];
   assistant: AssistantSettings;
   diary: DiarySettings;
-  dailyCard: DailyCardSettings;
   /** 模型调节参数（per-model，key=模型名） */
   modelParams: Record<string, Record<string, number>>;
   /** 模型自动行为开关（per-model） */
@@ -94,8 +81,6 @@ export interface Settings {
    * 全局提前量救不了这种差异，只能让用户按歌校准一次、之后一直准。
    */
   lyricOffsets: Record<string, number>;
-  /** 麻将桌上的 AI 实时互动（需要配置 API Key；有节流与每局/每场上限） */
-  gameTalk: boolean;
   /** 整点播报：每到整点让桌宠报一次时间（本地文案，零 token） */
   hourlyChime: boolean;
   /** 整点播报免打扰开关（时段由下面两个字段决定） */
@@ -104,29 +89,10 @@ export interface Settings {
   hourlyQuietStart: number;
   /** 免打扰结束小时（不含），0~23，默认 8 */
   hourlyQuietEnd: number;
-  /** TTS 语音输出配置 */
-  tts: {
-    enabled: boolean;
-    apiKey: string;
-    speakerId: string;
-  };
-  /** 语音识别（输入）配置 */
-  asr: {
-    /**
-     * 麦克风权限开关（应用内，立即生效）。
-     * 关掉后点 🎤 直接提示权限已关闭、不会去开麦克风；
-     * 同时在「🎤 语音识别设置」里会一并同步到 Windows 的麦克风隐私设置。
-     */
-    micAllowed: boolean;
-  };
 }
 
 const DEFAULTS: Settings = {
   audioEnabled: true,
-  gameSound: true,
-  gameSoundVolume: 0.3,
-  gameMusic: true,
-  gameMusicVolume: 0.18,
   activity: "low",
   mouseTrack: false,
   idleMode: false,
@@ -154,27 +120,15 @@ const DEFAULTS: Settings = {
     enabled: true,
     autoGenerate: true,
   },
-  dailyCard: {
-    enabled: true,
-  },
   modelParams: {},
   modelAuto: {},
   musicLyrics: true,
   lyricsTranslate: true,
   lyricOffsets: {},
-  gameTalk: false,
   hourlyChime: true,
   hourlyChimeQuiet: true,
   hourlyQuietStart: 23,
   hourlyQuietEnd: 8,
-  tts: {
-    enabled: false,
-    apiKey: "",
-    speakerId: "",
-  },
-  asr: {
-    micAllowed: true,
-  },
 };
 
 /** 活动频率表情因子：越大表情/活动越少（渲染器用） */
@@ -197,14 +151,7 @@ export function loadSettings(): Settings {
       ...parsed,
       assistant: { ...DEFAULTS.assistant, ...(parsed.assistant ?? {}) },
       diary: { ...DEFAULTS.diary, ...(parsed.diary ?? {}) },
-      dailyCard: { ...DEFAULTS.dailyCard, ...(parsed.dailyCard ?? {}) },
-      tts: { ...DEFAULTS.tts, ...(parsed.tts ?? {}) },
-      asr: { ...DEFAULTS.asr, ...(parsed.asr ?? {}) },
     };
-    s.gameSound = s.gameSound !== false;
-    s.gameSoundVolume = Math.max(0, Math.min(1, Number.isFinite(Number(s.gameSoundVolume)) ? Number(s.gameSoundVolume) : DEFAULTS.gameSoundVolume));
-    s.gameMusic = s.gameMusic !== false;
-    s.gameMusicVolume = Math.max(0, Math.min(1, Number.isFinite(Number(s.gameMusicVolume)) ? Number(s.gameMusicVolume) : DEFAULTS.gameMusicVolume));
     // 禁止目录：存档可能被手改坏，这里兜一层类型
     s.fileDenyPaths = Array.isArray(s.fileDenyPaths)
       ? s.fileDenyPaths.filter((p): p is string => typeof p === "string" && p.trim() !== "")

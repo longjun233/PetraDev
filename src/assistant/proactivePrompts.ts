@@ -1,17 +1,14 @@
 /**
- * 主动问候 / 抽卡点评的 prompt 组装（纯函数，可直接单测）。
+ * 主动问候的 prompt 组装（纯函数，可直接单测）。
  *
- * 这两条都是"临时 history、不进主对话历史"的轻量调用，且都要求
- * 「原文 + --- + 中文翻译」的格式，所以共用同一套语言指令。
+ * 这是一条"临时 history、不进主对话历史"的轻量调用，要求
+ * 「原文 + --- + 中文翻译」的格式，因此接入同一套语言指令。
  *
  * **这里的位置是硬性要求**：语言提醒必须排在所有中文要求的**最后一行**。
  *
  * 以前的写法是把语言指令放在 prompt 中段，后面还跟着"要求：简短（1-2句）、
- * 口语化、不要像客服"这类中文 —— 模型顺着最近的中文继续写，于是：
- *   1. 定时问候偶尔整句说中文；
- *   2. 第一行写成中文、`---` 也丢了。
- * 而 TTS 只朗读 `---` 之前的部分（见 TTSPlayer.pushDelta），丢了分隔符就把中文
- * 一起念出来 —— 用户听到的就是"他在说中文"。
+ * 口语化、不要像客服"这类中文 —— 模型顺着最近的中文继续写，于是定时问候偶尔
+ * 整句说中文、第一行写成中文、`---` 也丢了。
  *
  * 单纯把指令挪到最后还不够稳，所以这里是双保险：
  *   · 用户消息末尾 → buildLanguageReminder（模型对末尾最敏感）
@@ -47,24 +44,6 @@ export function buildGreetingPrompt(p: GreetingPromptParts): string {
     "\n要求：简短（1-2句）、口语化、不要像客服。" +
     "不要说\"作为AI\"之类的话。";
   return `${head}\n\n${body}${trailingReminder(p.outputLanguage)}`;
-}
-
-export interface CardCommentParts {
-  rarity: string;
-  theme: string;
-  baseText: string;
-  aiText: string;
-}
-
-/** 抽卡点评的用户消息。语言提醒固定收尾。 */
-export function buildCardCommentPrompt(card: CardCommentParts, outputLanguage: string): string {
-  let cardInfo = `主题「${card.theme}」，祝福语：${card.baseText}`;
-  if (card.aiText !== card.baseText) cardInfo += `，AI文案：${card.aiText}`;
-  const body =
-    `[抽卡点评] 刚才用户抽到了一张 ${card.rarity} 卡，${cardInfo}。` +
-    "用你的人设风格对这张卡发表一句简短的点评或吐槽（1-2句），保持口语化，" +
-    "不要复述祝福语。直接对用户说话。";
-  return `${body}${trailingReminder(outputLanguage)}`;
 }
 
 /**

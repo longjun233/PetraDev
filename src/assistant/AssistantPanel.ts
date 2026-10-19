@@ -4,22 +4,18 @@ import { chatStream, extractCommand, stripCommand, PROVIDERS, isProviderReady, t
 import { classifyEmotion, classifyAssistantEmotion, moodFallbackEmotion, reactNow, emotionEmoji, boostMood, getMood, type EmotionTag } from "./EmotionEngine";
 import type { AssistantProvider } from "../utils/settings";
 import { trackEvent } from "../features/diary/DiaryEventTracker";
-import { dailyDraw, hasDrawnToday, getTodayDraw, getCollectionProgress } from "../features/card/DailyCardManager";
 import { loadDiaries, getDiary } from "../features/diary/DiaryManager";
 import { loadSettings, saveSettings } from "../utils/settings";
 import { buildLanguageInstruction, buildLanguageReminder, langNameOf, splitTranslation } from "../utils/outputLanguage";
 import { appNameFromTitle, frontWindowForModel, isOwnWindow } from "../utils/foregroundApp";
 import {
-  buildCardCommentPrompt,
   buildGreetingPrompt,
   proactiveLangInstruction,
 } from "./proactivePrompts";
 import { ToolLoopBudget, formatToolError, toolNames, truncateToolResult, validateToolArgs } from "./toolRuntime";
-import { ttsPlayer } from "../tts/TTSPlayer";
 import { getVisibleRect } from "../ui/visible";
 import { deleteWrongHistory } from "./ChatHistory";
 import { toast } from "../ui/Toast";
-import { getSpeechRecognizer, type SpeechRecognizer } from "../asr/SpeechRecognizer";
 
 /** 输入条空闲多久自动收起（毫秒）。只认"真的在用"：点它、打字、用语音 */
 const IDLE_HIDE_MS = 20000;
@@ -37,38 +33,6 @@ let timer: number | null = null;
 let busy = false;
 let lifecycleOnOpen: (() => void) | null = null;
 let lifecycleOnClose: (() => void) | null = null;
-
-/**
- * 语音输入。模块级持有：`closeAssistant` 必须能停掉它。
- *
- * 之前只有 ensureInput 的闭包里攥着这个引用，结果是"关掉小助手"跟麦克风毫无关系 ——
- * 面板关了，录音还在跑（Mac/Linux 上环境噪音一直有的话 VAD 永远不判静音，
- * 麦克风就一直亮着），而且说完还会触发一次发送，气泡在输入框已经隐藏的情况下冒出来。
- */
-let recognizer: SpeechRecognizer | null = null;
-/**
- * 本次语音是"按了键盘被暂停"的：识别到的内容只放进输入框，**不自动发送**
- * （用户按下任意键 = 想自己看一眼/改一改再发）。会话结束时清掉。
- */
-let voicePausedByKey = false;
-let micBtn: HTMLButtonElement | null = null;
-
-/** 麦克风图标：细描边的胶囊 + 拾音弧 + 支架，24 网格便于缩放 */
-const MIC_ICON_SVG =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" ' +
-  'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-  '<rect x="9" y="2.6" width="6" height="10.8" rx="3"></rect>' +
-  '<path d="M5.6 11.2a6.4 6.4 0 0 0 12.8 0"></path>' +
-  '<path d="M12 17.6V21"></path></svg>';
-
-/** 录音中的律动条（4 根，错开相位；纯 CSS 动画） */
-const MIC_WAVE_HTML =
-  '<span class="as-mic-wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>';
-
-function getRecognizer(): SpeechRecognizer {
-  if (!recognizer) recognizer = getSpeechRecognizer();
-  return recognizer;
-}
 
 /** 输入框最多长到几行（再高就自己内部滚动），大约 6 行 */
 const INPUT_MAX_HEIGHT = 96;
@@ -290,24 +254,7 @@ function ensureInput() {
     }
   });
 
-  // 语音输入按钮：点一下开始听，边说边出字，说完停顿自动发送；正在听时再点一下取消。
-  // 取消语义很重要 —— 之前"再点一下"走的是 stop()，会把手里的识别结果直接发出去，
-  // 用户想反悔却把话发出去了。
-  //
-  // 图标用内联 SVG 而不是 🎤 emoji：emoji 在不同系统/字体下长得不一样，缩放也糊，
-  // 塞进 26px 圆钮里显廉价。录音中的"律动音量条"同样交给 CSS 动画（纯装饰，
-  // 不依赖真实音量——浏览器原生识别那条路拿不到音量）。
-  const mic = document.createElement("button");
-  mic.className = "as-mic";
-  mic.type = "button";
-  mic.innerHTML = MIC_ICON_SVG + MIC_WAVE_HTML;
-  mic.title = "语音输入（说完自动发送，再点一下取消）";
-  mic.setAttribute("aria-label", "语音输入");
-  mic.setAttribute("aria-pressed", "false");
-  mic.addEventListener("click", () => void toggleVoiceInput());
-  micBtn = mic;
-
-  row.append(input, mic, btn);
+  row.append(input, btn);
 
   // 发送下面：允许所有 shell 复选框（持久化到设置，重启后保持）
   const allowRow = document.createElement("label");
@@ -480,143 +427,11 @@ function resetTimer() {
   // 5 分钟没在用（没点输入条、没打字、没语音）就把输入条收起来
   timer = setTimeout(() => {
     timer = null;
-    // 正在听语音时不收：麦克风还开着，把面板收掉等于打断用户说话。
-    // 这跟以前那个 `if (busy) 续一轮` 不一样 —— 识别器自己有上限
-    // （说完了 / 一直没声音 / 硬上限 60 秒都会结束），不会无限续下去。
-    if (recognizer?.isRecording()) {
-      resetTimer();
-      return;
-    }
     // 这里**不能**再看 busy 续命：桌宠流式回话、卡在工具循环里时 busy 可能长时间为真，
     // 输入条就永远收不掉了（用户实际遇到的就是这个）。收起只隐藏输入条，气泡与回复
     // 照常显示，所以"等它说完再收"本来就没必要。
     closeAssistant();
   }, IDLE_HIDE_MS);
-}
-
-/** 把识别器的事件接到输入框上（每次点麦克风都重接一遍，反正很便宜） */
-function wireRecognizer(): SpeechRecognizer {
-  const r = getRecognizer();
-  r.setHandlers({
-    onPartial: (text) => {
-      // 边说边出字：长句子会自动向下长高，用户能看清识别成了什么
-      setInputValue(text);
-      // 程序改 value **不会**触发 input 事件，语音必须自己续命，
-      // 否则"只靠说话"的用户会在面板空闲超时那一刻被自动关闭（录音一起被掐）
-      resetTimer();
-    },
-    onFinal: (text) => {
-      const t = text.trim();
-      resetTimer();
-      if (!t) return;
-      // 按任意键暂停的那种：内容留在输入框给用户改，**不自动发送**
-      if (voicePausedByKey) {
-        voicePausedByKey = false;
-        setInputValue(t);
-        input.focus();
-        keepInputBarOnScreen();
-        toast("已暂停识别，内容留在输入框，回车发送", "warn");
-        return;
-      }
-      if (busy) {
-        // send() 忙的时候会直接 return；不留住的话用户刚说的话就凭空消失了
-        setInputValue(t);
-        toast("上一句还没答完，这句先放进输入框了", "warn");
-        return;
-      }
-      setInputValue("");
-      // 把你刚说的话以气泡形式留在屏幕上：语音是"说完就自动发送"，输入框立刻被清空，
-      // 不 echo 的话用户根本没机会看清这次识别成了什么（原来的体验就是"还没看到就发出去了"）
-      addBubble("user", t);
-      void send(t);
-    },
-    onRecordingStart: () => { input.placeholder = "正在听…"; },
-    // 听了半天一个字都没识别到：必须出声，不然就是"点了麦克风没反应"
-    onNoSpeech: () => {
-      if (voicePausedByKey) {
-        voicePausedByKey = false;
-        toast("已暂停语音识别", "warn");
-        return;
-      }
-      toast("没听到内容，再说一次试试（确认麦克风没被静音）", "warn");
-    },
-    onError: (msg) => { toast(msg, "warn"); },
-    onStateChange: (recording) => {
-      if (!micBtn) return;
-      // 外观全部交给 CSS（图标↔律动条、光环、渐变都挂在 .as-mic-recording 上）：
-      // 这里千万不要再动 textContent，否则会把内联 SVG 一起抹掉
-      micBtn.classList.toggle("as-mic-recording", recording);
-      micBtn.setAttribute("aria-pressed", recording ? "true" : "false");
-      micBtn.title = recording
-        ? "正在听…（说完 5 秒自动发送；按任意键暂停、内容留在输入框；再点一下取消）"
-        : "语音输入（说完 5 秒自动发送；按任意键暂停不发送）";
-      input.placeholder = recording ? "正在听…（按任意键暂停）" : "问点什么…";
-      if (recording) {
-        // 新一轮开始才重置"按键盘暂停"的标记。
-        // 注意不能在 recording=false 时重置 —— stop() 会先触发 onStateChange(false)
-        // 再调 onFinal，那样标记会在 onFinal 读到之前就被清掉（等于没生效）。
-        voicePausedByKey = false;
-        document.addEventListener("keydown", onVoiceKeydown, true);
-      } else {
-        document.removeEventListener("keydown", onVoiceKeydown, true);
-      }
-    },
-  });
-  return r;
-}
-
-/**
- * 正在听语音时敲键盘：**暂停识别，但不自动发送**。
- *
- * 挂在 document 的**捕获阶段**：要比输入框自己的 Enter 处理器先拿到事件，
- * 否则那一下 Enter 会被当成"发送输入框里的内容"。
- * 用 preventDefault 吞掉默认动作 —— 不然按的字母会同时被塞进输入框。
- * 两种例外：Esc 走取消（丢弃不发送）；其余键都是"暂停"，识别到的话
- * 会落在输入框里由用户自己改、自己回车发（见 voicePausedByKey 的用法）。
- */
-function onVoiceKeydown(e: KeyboardEvent): void {
-  const r = recognizer;
-  if (!r?.isRecording()) return;
-  // 单按 Shift/Ctrl/Alt 这种修饰键不算"敲了键"，别误触发
-  if (e.key === "Shift" || e.key === "Control" || e.key === "Alt" || e.key === "Meta") return;
-  e.preventDefault();
-  e.stopPropagation();
-  if (e.key === "Escape") {
-    r.cancel();
-    toast("已取消这次语音输入", "warn");
-    return;
-  }
-  voicePausedByKey = true; // 让 onFinal 知道：这次是"暂停"，别自动发送
-  r.stop(); // 停止并提交 → onFinal → 把内容放进输入框等用户确认
-}
-
-/** 点麦克风：没在听就开始听，正在听就取消（取消 = 丢弃，不发送） */
-async function toggleVoiceInput(): Promise<void> {
-  const r = wireRecognizer();
-  resetTimer(); // 碰麦克风也算"人在互动"，别让空闲超时把面板收走
-  if (r.isRecording()) {
-    r.cancel();
-    return;
-  }
-  // 应用内的麦克风权限开关（在「🎤 语音识别设置」里关掉后，这里直接拦住，
-  // 既不去开麦克风、也不去申请权限）
-  if (!loadSettings().asr.micAllowed) {
-    toast("麦克风权限已关闭：右键 →「🎤 语音识别设置」→ 麦克风权限", "warn");
-    return;
-  }
-  // 在线识别（Mac/Linux，以及原生识别降级后的 Windows）要有可用的 Key，
-  // 否则点下去只是白录一轮再报错。这里问 asr_key_ready 而不是 get_asr_key：
-  // 后者只报"用户自己填的"，内置的默认 Key 是隐藏的（不能显示到界面上）
-  if (r.needsApiKey()) {
-    const ready = await invoke<boolean>("asr_key_ready").catch(() => false);
-    if (!ready) {
-      toast("未配置语音识别 API Key：右键 →「🎤 语音识别设置」", "warn");
-      return;
-    }
-  }
-  // 抢话：麦克风开着时 TTS 还在响，识别会把桌宠自己的声音也听进去
-  if (ttsPlayer.isSpeaking()) ttsPlayer.stop();
-  r.start();
 }
 
 /**
@@ -851,9 +666,6 @@ export function closeAssistant() {
     clearTimeout(timer);
     timer = null;
   }
-  // 面板要关了，麦克风不能还开着：用 cancel（丢弃结果），
-  // 否则关掉之后还会因为"识别完成"冒出一次发送和一串气泡
-  recognizer?.cancel();
   inputBar?.classList.add("hidden");
   lifecycleOnClose?.();
 }
@@ -993,8 +805,6 @@ function buildChatContext(nickname: string, outputLang: string): string {
 async function send(text: string) {
   if (busy) return;
   const s = loadSettings();
-  const ttsKey = await invoke<string>("get_tts_key").catch(() => "");
-  ttsPlayer.setConfig(s.tts.enabled, ttsKey, s.tts.speakerId, s.assistant.outputLanguage ?? "");
   const apiKey = await ensureApiKey();
   if (!s.assistant.enabled) {
     const b = addBubble("sys", "小助手模式没开：右键 →「小助手模式」打开");
@@ -1061,7 +871,6 @@ async function send(text: string) {
         (delta) => {
           streamed = true;
           colorHook.push(delta);
-          ttsPlayer.pushDelta(delta);
         },
         true,
         extraCtxWithLang,
@@ -1135,19 +944,6 @@ async function send(text: string) {
       }
       // 颜色：识别不到情绪时用当前心情兜底，避免大部分回复都是白气泡
       loading.dataset.emotion = bubbleEmotion(aiEmo);
-      // 小喇叭静音按钮
-      const muteBtn = document.createElement("div");
-      muteBtn.setAttribute("data-petra-interactive", "true");
-      muteBtn.style.cssText = "display:inline-block;margin-top:6px;cursor:pointer;font-size:14px;opacity:0.7;padding:2px 6px;border-radius:4px;background:rgba(255,255,255,0.1);";
-      muteBtn.textContent = ttsPlayer.muted ? "🔇" : "🔊";
-      muteBtn.onclick = (e) => {
-        e.stopPropagation();
-        // 实时静音/放声：交给 TTSPlayer 立刻改正在播的那一段的音量。
-        // 不能靠查 DOM 设 volume —— new Audio() 的元素不在 DOM 里，查不到（老 bug）。
-        ttsPlayer.setMuted(!ttsPlayer.muted);
-        muteBtn.textContent = ttsPlayer.muted ? "🔇" : "🔊";
-      };
-      loading.appendChild(muteBtn);
       // 记录对话事件（日记系统）：记用户说的话（tracker 内部 safeSlice 截到 80 字）
       trackEvent({ type: "chat", summary: text });
       // CMD 兜底（非 function calling provider）
@@ -1171,7 +967,6 @@ async function send(text: string) {
       scheduleFade(note, 6000);
     }
     saveHistory();
-    ttsPlayer.flush();
 
     // P3 主动学习：每 5 条对话自动提取新记忆（后台运行，不阻塞 UI）
     if (history.length % 5 === 0) {
@@ -1180,20 +975,7 @@ async function send(text: string) {
     if (!getBubbleText(loading).trim()) setBubbleText(loading, "(空回复)");
     // 回复说完就淡出（用户要求：「两段话说完了气泡也没有消失」）。
     // 以前这里刻意不淡出，气泡就一直挂到下一轮、把桌宠挡个正着。
-    // 语音开着就等这一段播完再按字数计时（onIdle 只在「队列空且未在播」时触发一次，
-    // 合成失败/没排上队时永不触发 -> 120 秒兜底）；语音关着直接按字数计时。
-    if (s.tts.enabled && s.tts.apiKey && s.tts.speakerId) {
-      let armed = false;
-      const arm = () => {
-        if (armed) return;
-        armed = true;
-        scheduleFade(loading, readingHoldMs(getBubbleText(loading), 4000));
-      };
-      ttsPlayer.onIdle(arm);
-      window.setTimeout(arm, 120000);
-    } else {
-      scheduleFade(loading, readingHoldMs(getBubbleText(loading), 5000));
-    }
+    scheduleFade(loading, readingHoldMs(getBubbleText(loading), 5000));
   } catch (e) {
     setBubbleText(loading, friendlyApiError(e));
     loading.dataset.emotion = "worried";
@@ -1533,24 +1315,6 @@ async function handleToolCalls(calls: ToolCall[], loading: HTMLElement, budget: 
     if (tc.name === "lock_screen") {
       await invokeTool(tc, "lock_screen");
     }
-    if (tc.name === "daily_card") {
-      try {
-        // skipAiText：聊天里小助手会用自己的人设重新演绎祝福语，无需再单独生成一次
-        const result = await dailyDraw({ skipAiText: true });
-        const { collected, total } = getCollectionProgress();
-        const lines = [
-          "【抽卡结果】",
-          `稀有度：${result.rarity}`,
-          `主题：${result.card.theme}`,
-          `原文案：${result.card.baseText}`,
-        ];
-        if (result.aiText !== result.card.baseText) lines.push(`AI文案：${result.aiText}`);
-        lines.push(`图鉴：${collected}/${total}`, "", "请用你的人设风格重新演绎上面的文案，加入自己的点评或吐槽，不要原样复述。直接对用户说话。");
-        history.push({ role: "tool", tool_call_id: tc.id, content: lines.join("\n") });
-      } catch (e) {
-        history.push({ role: "tool", tool_call_id: tc.id, content: `抽卡失败：${e}` });
-      }
-    }
     if (tc.name === "view_diary") {
       const date = String(tc.args.date || "").trim();
       if (date) {
@@ -1806,7 +1570,6 @@ export async function triggerProactive() {
     // enableTools=false：问候不需要工具，省掉整套工具定义的输入 token
     await chatStream(s.assistant.provider, apiKey, s.assistant.model, tmpHistory, s.assistant.persona, memory, s.assistant.customBaseUrl, (d) => {
       colorHook.push(d);
-      ttsPlayer.pushDelta(d);
     }, false, langInstruction);
     for (const m of relevantMemories) {
       const orig = memory.find(e => e.id === m.id);
@@ -1824,17 +1587,11 @@ export async function triggerProactive() {
       div.textContent = transText;
       bubbleBody(bubble).appendChild(div);
     }
-    ttsPlayer.flush();
     const finalEmo = classifyAssistantEmotion(mainText);
     const emo = finalEmo !== "neutral" ? finalEmo : colorHook.lastEmotion();
     if (emo !== "neutral") reactNow(emo);
     bubble.dataset.emotion = bubbleEmotion(emo);
-    // 语音开着等播完再消失
-    if (s.tts.enabled && s.tts.apiKey && s.tts.speakerId) {
-      ttsPlayer.onIdle(() => scheduleFade(bubble, 3000));
-    } else {
-      scheduleFade(bubble, 10000);
-    }
+    scheduleFade(bubble, 10000);
   } catch {
     bubble.remove();
   } finally {
@@ -1843,61 +1600,6 @@ export async function triggerProactive() {
   }
 }
 
-/** 抽卡点评：用户关闭抽卡面板后，让 AI 根据卡牌结果发表评论（不污染聊天历史） */
-export async function triggerCardCommentary(card: { rarity: string; theme: string; baseText: string; aiText: string }) {
-  if (busy) return;
-  const s = loadSettings();
-  const apiKey = await ensureApiKey();
-  if (!s.assistant.enabled || !isProviderReady(s.assistant, apiKey)) return;
-
-  const outLang = s.assistant.outputLanguage ?? "";
-  const prompt = buildCardCommentPrompt(card, outLang);
-  const langInstruction = proactiveLangInstruction(outLang);
-
-  // 用临时 history，不污染主聊天历史
-  const tmpHistory: ChatMessage[] = [{ role: "user", content: prompt }];
-  busy = true;
-  lifecycleOnOpen?.();
-  const bubble = addBubble("ai", "");
-  const colorHook = makeStreamColorHook(bubble);
-  try {
-    // enableTools=false：点评不需要工具，省 token
-    await chatStream(s.assistant.provider, apiKey, s.assistant.model, tmpHistory, s.assistant.persona, memory, s.assistant.customBaseUrl, (d) => {
-      colorHook.push(d);
-      ttsPlayer.pushDelta(d);
-    }, false, langInstruction);
-    // 分离翻译：情绪分类与朗读都只用原文，译文和 --- 会干扰分类
-    const { main: mainText, trans: transText } = splitTranslation(getBubbleText(bubble));
-    setBubbleText(bubble, "");
-    bubbleBody(bubble).append(document.createTextNode(mainText));
-    if (transText) {
-      const div = document.createElement("div");
-      div.style.cssText = "font-size:11px;opacity:0.55;margin-top:4px;white-space:pre-wrap;";
-      div.textContent = transText;
-      bubbleBody(bubble).appendChild(div);
-    }
-    ttsPlayer.flush();
-    const finalEmo = classifyAssistantEmotion(mainText);
-    const emo = finalEmo !== "neutral" ? finalEmo : colorHook.lastEmotion();
-    if (emo !== "neutral") reactNow(emo);
-    bubble.dataset.emotion = bubbleEmotion(emo);
-    // 不保存到主 history，避免影响主动问候
-    // 语音开着：等播完再消失。onIdle 只在「队列空且未在播放」时触发一次，
-    // 短文可能在注册回调前就播完（回调永不触发），故必须带超时兜底。
-    if (s.tts.enabled && s.tts.apiKey && s.tts.speakerId) {
-      let faded = false;
-      ttsPlayer.onIdle(() => { if (!faded) { faded = true; scheduleFade(bubble, 3000); } });
-      setTimeout(() => { if (!faded) { faded = true; scheduleFade(bubble, 3000); } }, 120000);
-    } else {
-      scheduleFade(bubble, 8000);
-    }
-  } catch {
-    bubble.remove();
-  } finally {
-    busy = false;
-    lifecycleOnClose?.();
-  }
-}
 // 记忆初始化
 loadMemory();
 
