@@ -75,6 +75,8 @@ export class BehaviorEngine {
   private idleSettling = false; // 进入待机后、窗口尚未完成定位前，保持旧 modelOffset 不归零
   private idleTop = false;
   private idlePos: XY = { x: 100, y: 100 };
+  /** 待机时把模型水平推到窗口右侧的补偿量（窗口贴屏幕右下角，模型才真正贴角）。 */
+  private idleOffsetX = 0;
   private scaleFactor = 1; // 物理↔逻辑（IPC 边界转换用）；引擎内部全逻辑坐标
   private win = DEFAULT_WIN; // 当前窗口边长（700x700）
 
@@ -136,6 +138,11 @@ export class BehaviorEngine {
           // 模型比工作区还宽时，优先保证左边缘可见
           x = minX;
         }
+        // 窗口本身贴到右边缘了，但模型在 700 窗口里居中，离屏幕右边还有一段；
+        // 把模型水平往右上推到窗口右侧（留 40px），看起来才是"坐在右下角"。
+        this.idleOffsetX = Math.max(0, (this.win - 40) - charBounds.right);
+      } else {
+        this.idleOffsetX = 0;
       }
 
       // 使用角色实际边界计算垂直待机位置，确保头部始终可见
@@ -185,6 +192,7 @@ export class BehaviorEngine {
       this.idle = false;
       this.idleSettling = false;
       this.idleTop = false; // 退出待机复位倒挂信号，避免残留倒立
+      this.idleOffsetX = 0;
       this.target = null;
       this.suspendUntil = performance.now() + 1500;
       this.clearTarget();
@@ -517,10 +525,10 @@ export class BehaviorEngine {
   /** 模型偏移补偿：窗口出屏时，模型反向偏移保持角色不出屏（每帧调用） */
   syncModelOffset(bounds?: { left: number; top: number; right: number; bottom: number }) {
     if (this.idle) {
-      // 进入待机后要等窗口真正移动到待机位置，才能把模型 offset 归零；
+      // 进入待机后要等窗口真正移动到待机位置，才能把模型 offset 归位；
       // 否则窗口还在旧位置时模型会先跳回窗口内未补偿位置（可能瞬移出屏）。
       if (!this.idleSettling) {
-        this.modelOffset.x = 0;
+        this.modelOffset.x = this.idleOffsetX;
         this.modelOffset.y = 0;
       }
       return;
