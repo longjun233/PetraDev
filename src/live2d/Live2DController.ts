@@ -99,7 +99,23 @@ export class Live2DController implements PetView {
       l2dLog("wrap coreModel.update failed: " + String(e));
     }
     ctrl.baseScale = desiredScale;
+    // displayW 是「模型目标显示边长」：默认铺满窗口（700），
+    // 「模型大小」滑条在这个基准上按比例缩放
+    ctrl.displayW = window.innerWidth || 700;
     ctrl.fit();
+    // 首帧前强制模型完整更新一次：Cubism 的裁剪遮罩（clipping）与顶点都要等
+    // internalModel.update() 之后才就绪，否则大模型会先露出身体、头部部件
+    // 过一阵才出现（"初次启动头消失一段时间"的根因）。
+    try {
+      (model as unknown as { update?: (dt: number) => void }).update?.(0);
+    } catch (e) {
+      l2dLog("l2d warmup update fail: " + String(e));
+    }
+    // 纹理上传 + 首帧更新完成前先隐藏，避免中间态闪烁；双 rAF + 超时兜底
+    ctrl.container.visible = false;
+    const reveal = () => { if (ctrl.container) ctrl.container.visible = true; };
+    requestAnimationFrame(() => requestAnimationFrame(reveal));
+    window.setTimeout(reveal, 300);
     return ctrl;
   }
 
@@ -111,7 +127,10 @@ export class Live2DController implements PetView {
     const ch = (m as unknown as { height?: number }).height || 300;
     const W = window.innerWidth || 700;
     const H = window.innerHeight || 700;
-    const s = Math.min((W * 0.9) / cw, (H * 0.9) / ch) * this.baseScale;
+    // displayW = 目标显示边长（stage 坐标），由「模型大小」面板控制；
+    // 100% 等于窗口边长 700，即默认铺满（与改动前一致）
+    const target = Math.max(50, this.displayW);
+    const s = Math.min((target * 0.9) / cw, (target * 0.9) / ch) * this.baseScale;
     m.scale.set(s, s);
     m.anchor.set(0.5, 0.5);
     m.position.set(W / 2, H / 2);
@@ -135,7 +154,10 @@ export class Live2DController implements PetView {
     this.click = Math.max(0, this.click - dt * 6);
     this.modelOffsetX = d.modelOffsetX || 0;
     this.modelOffsetY = d.modelOffsetY || 0;
-    m.position.set(this.displayW / 2 + this.modelOffsetX, this.displayW / 2 + this.modelOffsetY);
+    const W = window.innerWidth || 700;
+    const H = window.innerHeight || 700;
+    // 模型始终以窗口中心为基准定位（displayW 只决定大小，不决定位置）
+    m.position.set(W / 2 + this.modelOffsetX, H / 2 + this.modelOffsetY);
     if (Math.abs(d.vx) > 0.02) this.lastVx = d.vx;
     const wantMirror = this.lastVx < 0 ? -1 : 1;
     if (wantMirror !== this.mirror) {
@@ -351,7 +373,7 @@ export class Live2DController implements PetView {
   }
 
   setScale(displayW: number) {
-    this.displayW = displayW;
+    this.displayW = Math.max(50, displayW);
     if (this.model) this.fit();
   }
 

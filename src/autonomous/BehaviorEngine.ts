@@ -124,15 +124,12 @@ export class BehaviorEngine {
         msg: `idle:bottom-only posY=${Math.round(this.pos.y)}`,
       }).catch(() => {});
 
-      // 水平位置：进入待机后 modelOffset 会归零，因此以“模型当前屏幕位置”反推窗口 x，
-      // 再把模型水平夹回工作区内，避免右下/左下等贴边位置进入待机时模型瞬移到屏外。
-      let x = this.pos.x;
+      // 水平位置：固定屏幕右下角 —— 窗口右边缘贴工作区右边缘。
+      // （以前是"保持进入前的水平位置"，模型缩小后停在哪算哪，看起来不像待机。）
+      let x = a.left + a.width - this.win;
       if (charBounds) {
-        const modelLeft = charBounds.left;
-        const modelRight = charBounds.right;
-        x = this.pos.x + this.modelOffset.x; // 抵消即将归零的 modelOffset，保持模型屏幕 x 不变
-        const minX = a.left + EDGE_PAD - modelLeft;
-        const maxX = a.left + a.width - EDGE_PAD - modelRight;
+        const minX = a.left + EDGE_PAD - charBounds.left;
+        const maxX = a.left + a.width - EDGE_PAD - charBounds.right;
         if (maxX >= minX) {
           x = clamp(x, minX, maxX);
         } else {

@@ -294,7 +294,7 @@ async function applyModelScale(s: number, record = false) {
     if (key) settings.modelScales[key] = clamped;
   }
   saveSettings(settings);
-  const modelW = Math.round(300 * clamped); // 模型视觉大小以 300 为基准
+  const modelW = Math.round(WIN * clamped); // 100% = 窗口边长（当前默认大小）
   winSize = WIN; // 窗口始终 700x700
   engine.setWindowSize(WIN);
   view.setScale(modelW);
@@ -2332,6 +2332,8 @@ async function toggleIdle() {
     const p = await getCurrentWindow().outerPosition();
     engine.setPos(p.x / scaleFactor, p.y / scaleFactor);
     savePetPosition(p.x / scaleFactor, p.y / scaleFactor);
+    // 待机：模型缩到当前大小的 1/4（大模型按原尺寸贴底会露出过多，缩小后像坐在屏幕右下角）
+    view.setScale(Math.round(WIN * settings.modelScale * 0.25));
   }
   // 获取角色边界用于精确待机定位（left/right 也参与水平夹紧，避免贴边进入待机时瞬移出屏）
   const charBounds = view.getCharacterBounds?.();
@@ -2345,6 +2347,9 @@ async function toggleIdle() {
     } finally {
       engine.markIdleSettled();
     }
+  } else {
+    // 退出待机：恢复原来的模型大小
+    view.setScale(Math.round(WIN * settings.modelScale));
   }
   toast(settings.idleMode ? "困了，先眯一会儿…" : "醒啦～");
 }
