@@ -1,8 +1,15 @@
 [package]
 name = "petra"
 version = "0.3.1"
-description = "Petra desktop pet"
+description = "Petra desktop pet (modded build)"
 edition = "2021"
+
+# 改版产物名：与官方原版 petra.exe 区分，避免进程/快捷方式/任务管理器里混淆。
+# 只改二进制文件名，crate 名（petra_lib）与 identifier 均保持不变。
+[[bin]]
+name = "PetraDev"
+path = "src/main.rs"
+
 [lib]
 name = "petra_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
